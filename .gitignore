@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+data/
+*.sqlite*
+.wordbook-test-*/
+
+# 构建产物、私人备份和本地验证输出
+dist/
+wordbook-backup-*.json
+.wordbook-test/
+.playwright-mcp/
+playwright-report/
+test-results/
