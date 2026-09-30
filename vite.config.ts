@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
-  // 相对路径让同一份静态产物可用于 Pages 仓库子路径或自定义域名。
+  // Relative paths let the same static build work under a Pages repository path or a custom domain.
   base: './',
   plugins: [
     react(),
@@ -21,7 +21,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // 部署产物保留可读代码，方便浏览器中定位问题。
+    // Keep deployed code readable for browser debugging.
     minify: false,
     cssMinify: false,
     sourcemap: true,

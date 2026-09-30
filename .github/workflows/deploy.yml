@@ -1,6 +1,8 @@
 name: Deploy Wordbook to GitHub Pages
 
 on:
+  pull_request:
+    branches: [develop, main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -8,9 +10,9 @@ on:
 permissions:
   contents: read
 
-# 不取消进行中的部署，同一时间只允许一个 Pages 工作流运行。
+# Keep PR checks separate from releases without canceling an active deployment.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -45,15 +47,18 @@ jobs:
       - name: Build static site
         run: pnpm build
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
       - name: Upload Pages artifact
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-pages-artifact@v4
         with:
           path: dist
 
   deploy:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -63,6 +68,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

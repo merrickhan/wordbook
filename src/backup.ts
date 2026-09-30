@@ -40,7 +40,7 @@ export function parseBackup(text: string): DatedEntry[] {
 export function serializeBackup(entries: readonly StoredEntry[], exportedAt = new Date().toISOString()): string {
   checkEntries(entries);
   validateCreated(exportedAt);
-  // 本地 ID 只决定备份顺序，不进入文件；恢复时重新分配 ID。
+  // Local IDs only determine backup order and are omitted from the file; restore assigns new IDs.
   const ordered = Array.from(entries, value => {
     const entry = validateDatedEntry(value);
     if (!Number.isSafeInteger(value.id) || value.id <= 0)
