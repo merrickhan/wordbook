@@ -3,6 +3,14 @@ import { createEntry, sample, validWord, type Entry } from './entry';
 import { MessageError, type Message } from './messages';
 import { DEFAULT_DICTIONARY_PROVIDER, dictionaryProviders, type DictionaryProvider } from './dictionary-providers';
 import { formatPhonetics } from './phonetics';
+import { translateBaidu, type BaiduTransport } from './baidu-translation';
+import { DEFAULT_TRANSLATION_PROVIDER, translationProviders, type TranslationProvider, type BaiduCredentials } from './translation-providers';
+
+export type TranslationOptions = {
+  provider?: TranslationProvider;
+  credentials?: BaiduCredentials | null;
+  transport?: BaiduTransport;
+};
 
 type LookupResult = { entry: Entry; warnings: Message[] };
 type Fetcher = (url: string, options?: RequestInit) => Promise<Response>;
@@ -129,6 +137,7 @@ export async function lookup(
   fetcher: Fetcher = fetch,
   signal?: AbortSignal,
   provider: DictionaryProvider = DEFAULT_DICTIONARY_PROVIDER,
+  translation: TranslationOptions = {},
 ): Promise<LookupResult> {
   if (!validWord(raw)) throw new MessageError({ code: 'invalidWord' });
   if (signal?.aborted) throw signal.reason;
@@ -161,14 +170,17 @@ export async function lookup(
   const dictionaryUrl = provider === 'english-dictionary'
     ? 'https://englishdictionaryapi.com/api/v1/words/' + encodeURIComponent(word)
     : 'https://freedictionaryapi.com/api/v1/entries/en/' + encodeURIComponent(word) + '?translations=true';
-  const [dict, trans] = await Promise.allSettled([
-    request(dictionaryUrl),
-    request(
-      'https://api.mymemory.translated.net/get?q=' +
-        encodeURIComponent(word) +
-        '&langpair=en%7Czh-CN',
-    ),
-  ]);
+  const translationProvider = translation.provider ?? DEFAULT_TRANSLATION_PROVIDER;
+  async function translate(): Promise<string> {
+    if (translationProvider === 'baidu')
+      return translateBaidu(word, translation.credentials ?? null, signal, translation.transport);
+    const response = record(await request(
+      'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(word) + '&langpair=en%7Czh-CN',
+    ));
+    const translatedText = text(record(response.responseData).translatedText);
+    return Number(response.responseStatus) === 200 && /[㐀-鿿]/.test(translatedText) ? translatedText : '';
+  }
+  const [dict, trans] = await Promise.allSettled([request(dictionaryUrl), translate()]);
   if (signal?.aborted) throw signal.reason;
 
   const entry = createEntry(word);
@@ -192,14 +204,12 @@ export async function lookup(
   if (!entry.phonetic && !entry.definition && !entry.pos)
     warnings.push({ code: 'dictionaryUnavailable' });
 
-  if (!entry.translation && trans.status === 'fulfilled') {
-    const translation = record(trans.value);
-    const translatedText = text(record(translation.responseData).translatedText);
-    if (Number(translation.responseStatus) === 200 && /[㐀-鿿]/.test(translatedText)) {
-      entry.translation = translatedText;
-      sources.push('MyMemory（机器翻译）');
-    }
+  if (!entry.translation && trans.status === 'fulfilled' && trans.value) {
+    entry.translation = trans.value;
+    sources.push(translationProviders[translationProvider].source);
   }
+  if (translationProvider === 'baidu' && trans.status === 'rejected')
+    warnings.push(trans.reason instanceof MessageError ? trans.reason.detail : { code: 'baiduUnavailable' });
   entry.source = sources.join(' | ') || '手动填写';
   if (!entry.translation) warnings.push({ code: 'missingTranslation' });
   if (!entry.example) warnings.push({ code: 'missingExample' });

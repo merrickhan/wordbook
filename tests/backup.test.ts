@@ -62,6 +62,30 @@ test('双音标、单口音及未标口音的七字段、日期和来源经 v1 �
   assert.equal(serializeBackup(restored, exportedAt), text);
 });
 
+test('Baidu 来源经 v1 备份往返不变，额外凭据和设置字段不进入备份或恢复词条', () => {
+  const credentials = { appid: '123456789', key: 'synthetic-key-only' };
+  const machineSource = 'Baidu（机器翻译）';
+  const sources = [machineSource, ...['FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com'].map(provider =>
+    provider + ' | Wiktionary: https://en.wiktionary.org/wiki/could' +
+    ' | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑 | ' + machineSource)];
+  const values = sources.map(source => ({ ...entry, word: 'could', translation: '能够', source }));
+  const records = values.map((value, index) => ({
+    ...value, id: index + 1, ...credentials, credentials, baiduCredentials: credentials,
+    provider: 'baidu', translationProvider: 'baidu', dictionaryProvider: 'english-dictionary',
+    settings: { translationProvider: 'baidu', baiduCredentials: credentials, locale: 'en' },
+  }));
+  const original = structuredClone(records);
+  const text = serializeBackup(records, exportedAt);
+  assert.deepEqual(JSON.parse(text), envelope(values));
+  for (const secret of Object.values(credentials)) assert.equal(text.includes(secret), false);
+  for (const field of ['appid', 'key', 'credentials', 'baiduCredentials', 'provider', 'translationProvider', 'dictionaryProvider', 'settings'])
+    assert.equal(text.includes('"' + field + '"'), false);
+  assert.deepEqual(parseBackup(text), values);
+  assert.deepEqual(parseBackup(JSON.stringify(envelope(records))), values);
+  assert.equal(serializeBackup(parseBackup(text).map((value, index) => ({ ...value, id: index + 1 })), exportedAt), text);
+  assert.deepEqual(records, original);
+});
+
 test('空库允许导出和导入，默认导出时间是合法 UTC ISO', () => {
   assert.deepEqual(parseBackup(serializeBackup([], exportedAt)), []);
   const before = Date.now();

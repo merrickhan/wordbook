@@ -78,17 +78,31 @@ summary:focus-visible,
 input,
 textarea,
 select {
-  width: 100%;
   min-width: 0;
-  min-height: 44px;
   max-width: 100%;
-  padding: 9px 12px;
   border: 1px solid var(--control-border);
   border-radius: 6px;
   background: var(--paper);
   color: var(--ink);
+}
+
+input,
+textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
   font-size: max(16px, 1rem);
   line-height: 1.5;
+}
+
+.provider-select {
+  width: auto;
+  min-height: 44px;
+  padding: 4px 8px;
+  background: transparent;
+  font-size: max(16px, 1rem);
+  line-height: 1.5;
+  cursor: pointer;
 }
 
 input:focus,
@@ -226,12 +240,48 @@ main {
 }
 
 .dictionary-choice {
-  width: min(9.5rem, 100%);
   min-width: 0;
+  max-width: 100%;
   margin-left: auto;
 }
 
-.dictionary-choice select:disabled {
+.translation-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.translation-choice label {
+  color: var(--muted);
+}
+
+.translation-choice select {
+  margin-left: auto;
+}
+
+.baidu-settings {
+  margin-block: 4px 12px;
+  border-bottom: 1px solid var(--divider);
+}
+
+.baidu-settings summary span {
+  margin-left: 8px;
+  font-size: var(--text-small);
+}
+
+.baidu-settings .fields {
+  margin-block: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-bottom: 8px;
+}
+
+select:disabled {
   opacity: 0.55;
   cursor: wait;
 }
@@ -772,6 +822,14 @@ main {
   .lookup-form .primary {
     flex: auto;
     width: 100%;
+  }
+}
+
+/* Compact secondary choices only when no touch target needs the larger size. */
+@media (min-width: 640px) and (hover: hover) and (pointer: fine) and (not (any-pointer: coarse)) {
+  .provider-select {
+    min-height: 32px;
+    font-size: var(--text-body);
   }
 }
 

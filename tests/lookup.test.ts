@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DICTIONARY_LICENSE_URL, lookup, wiktionaryUrl } from '../src/vocabulary';
+import { DICTIONARY_LICENSE_URL, lookup, wiktionaryUrl, type TranslationOptions } from '../src/vocabulary';
 import { sample, validateEntry } from '../src/entry';
 import { parseBackup, serializeBackup } from '../src/backup';
-import { MessageError } from '../src/messages';
+import { MessageError, type Message } from '../src/messages';
 
 const dictionary = {
   word: 'could',
@@ -51,6 +51,46 @@ const missingWarnings = [
   { code: 'missingExample' }, { code: 'missingPhonetic' },
 ];
 const translation = { responseStatus: 200, responseData: { translatedText: '能够' } };
+const baiduCredentials = Object.freeze({ appid: '123456789', key: 'synthetic-key-only' });
+const baiduSource = 'Baidu（机器翻译）';
+const baiduTranslation = (word = 'could') => ({ from: 'en', to: 'zh', trans_result: [{ src: word, dst: '能够' }] });
+const baiduOptions = { provider: 'baidu', credentials: baiduCredentials } satisfies TranslationOptions;
+const privateDiagnostic = 'Synthetic credential diagnostic: ' + JSON.stringify(baiduCredentials);
+const baiduFailures: {
+  code: Message['code'];
+  credentials: TranslationOptions['credentials'];
+  transport: NonNullable<TranslationOptions['transport']>;
+  calls: number;
+}[] = [
+  { code: 'baiduNotConfigured', credentials: undefined, transport: async () => baiduTranslation(), calls: 0 },
+  { code: 'baiduNotConfigured', credentials: null, transport: async () => baiduTranslation(), calls: 0 },
+  { code: 'baiduInvalidCredentials', credentials: { ...baiduCredentials, appid: '' }, transport: async () => baiduTranslation(), calls: 0 },
+  ...([
+    ['baiduAuthFailed', '54001'], ['baiduRateLimited', '54003'], ['baiduQuota', '54004'],
+    ['baiduIpBlocked', '58000'], ['baiduUnavailable', '52002'],
+  ] as const).map(([code, error_code]) => ({
+    code, credentials: baiduCredentials, calls: 1,
+    transport: async () => ({ error_code, error_msg: privateDiagnostic }),
+  })),
+  {
+    code: 'baiduInvalidResponse', credentials: baiduCredentials, calls: 1,
+    transport: async () => baiduTranslation('would'),
+  },
+  {
+    code: 'baiduUnavailable', credentials: baiduCredentials, calls: 1,
+    transport: async (url) => { throw new Error(url + ' ' + privateDiagnostic); },
+  },
+  {
+    code: 'baiduTimedOut', credentials: baiduCredentials, calls: 1,
+    transport: async () => { throw new MessageError({ code: 'baiduTimedOut' }, { cause: new Error(privateDiagnostic) }); },
+  },
+];
+function assertNoBaiduSecrets(value: unknown) {
+  const serialized = JSON.stringify(value);
+  assert.ok(serialized);
+  for (const secret of Object.values(baiduCredentials)) assert.equal(serialized.includes(secret), false);
+  assert.doesNotMatch(serialized, /(?:appid|salt|sign|key)=/);
+}
 const json = (value: unknown) => new Response(JSON.stringify(value));
 const isDictionary = (url: string) => ['freedictionaryapi.com', 'englishdictionaryapi.com'].includes(new URL(url).hostname);
 const respond = (dict: unknown = dictionary, trans: unknown = translation) =>
@@ -129,6 +169,51 @@ test('Chinese from another sense is not paired with the selected definition', as
   assert.equal(result.entry.example, 'Paired example.');
   assert.equal(result.entry.translation, '能够');
   assert.match(result.entry.source, /MyMemory/);
+});
+
+test('same-sense dictionary Chinese wins over Baidu without hiding Baidu failures', async (context) => {
+  const dict = withSenses([{
+    definition: 'paired meaning', examples: ['A paired example.'],
+    translations: [
+      { language: { code: 'cmn' }, word: '词典译文' },
+      { language: { code: 'zh' }, word: '词典译文' },
+    ],
+  }]);
+  const source = 'FreeDictionaryAPI.com | Wiktionary: https://en.wiktionary.org/wiki/could' +
+    ' | CC BY-SA 4.0: ' + DICTIONARY_LICENSE_URL + ' | 词典摘录，可经编辑';
+  const cases = [{ ...baiduOptions, transport: async () => baiduTranslation(), calls: 1, code: undefined }, ...baiduFailures];
+  for (const failure of cases) {
+    const calls: string[] = [];
+    const transport = context.mock.fn(failure.transport);
+    const result = await lookup('could', async (url) => {
+      calls.push(url);
+      return json(dict);
+    }, undefined, 'free-dictionary', { ...baiduOptions, credentials: failure.credentials, transport });
+    assert.deepEqual(calls, [endpoints['free-dictionary']('could')]);
+    assert.equal(transport.mock.callCount(), failure.calls);
+    assert.deepEqual(result.entry, {
+      word: 'could', phonetic: '/kʊd/', pos: 'Verb', definition: 'paired meaning',
+      example: 'A paired example.', translation: '词典译文', source,
+    });
+    assert.deepEqual(result.warnings, failure.code ? [{ code: failure.code }] : []);
+    assertNoBaiduSecrets(result);
+  }
+});
+
+test('Baidu fills the selected sense rather than borrowing another sense’s Chinese', async (context) => {
+  const dict = withSenses([
+    { definition: 'first', translations: [{ language: { code: 'cmn' }, word: '另一个义项' }] },
+    { definition: 'paired', examples: ['Paired example.'] },
+  ]);
+  const transport = context.mock.fn(async () => baiduTranslation());
+  const result = await lookup('could', respond(dict), undefined, 'free-dictionary', { ...baiduOptions, transport });
+  assert.equal(transport.mock.callCount(), 1);
+  assert.equal(result.entry.definition, 'paired');
+  assert.equal(result.entry.example, 'Paired example.');
+  assert.equal(result.entry.translation, '能够');
+  assert.equal(result.entry.source.split(' | ').at(-1), baiduSource);
+  assert.doesNotMatch(result.entry.source, /MyMemory/);
+  assert.deepEqual(result.warnings, []);
 });
 
 test('nested senses keep their own definition, example and Chinese translation', async () => {
@@ -524,6 +609,251 @@ for (const provider of providers) {
       example: 'A paired example.', translation: '能够', source: source + ' | MyMemory（机器翻译）',
     });
     assert.deepEqual(result.warnings, []);
+  });
+
+  test(`${provider}: default and explicit MyMemory options never invoke Baidu`, async (context) => {
+    for (const translationProvider of [undefined, 'mymemory'] as const) {
+      const calls: string[] = [];
+      const transport = context.mock.fn(async () => baiduTranslation());
+      const result = await lookup('could', async (url) => {
+        calls.push(url);
+        return respond(fixture)(url);
+      }, undefined, provider, { provider: translationProvider, credentials: baiduCredentials, transport });
+      assert.deepEqual(calls, [endpoints[provider]('could'), translationUrl('could')]);
+      assert.equal(transport.mock.callCount(), 0);
+      assert.equal(result.entry.translation, '能够');
+      assert.equal(result.entry.source, source + ' | MyMemory（机器翻译）');
+      assert.deepEqual(result.warnings, []);
+      assertNoBaiduSecrets(result);
+    }
+  });
+
+  test(`${provider}: only the selected dictionary and Baidu start in parallel`, async () => {
+    const calls: string[] = [];
+    const words: (string | null)[] = [];
+    const pending: (() => void)[] = [];
+    const promise = lookup(' COULD ', async (url, options) => {
+      calls.push(url);
+      assert.equal(options?.credentials, 'omit');
+      assert.equal(options?.referrerPolicy, 'no-referrer');
+      return new Promise<Response>((resolve) => pending.push(() => resolve(json(fixture))));
+    }, undefined, provider, {
+      ...baiduOptions,
+      transport: async (url) => {
+        words.push(new URL(url).searchParams.get('q'));
+        return new Promise((resolve) => pending.push(() => resolve(baiduTranslation())));
+      },
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(calls, [endpoints[provider]('could')]);
+      assert.deepEqual(words, ['could']);
+      assert.equal(pending.length, 2, 'neither route waits for the other route to finish');
+    } finally {
+      pending.forEach((resolve) => resolve());
+    }
+    const result = await promise;
+    assert.deepEqual(result.entry, {
+      word: 'could', phonetic: '/kʊd/', pos: 'Verb', definition: 'paired meaning',
+      example: 'A paired example.', translation: '能够', source: source + ' | ' + baiduSource,
+    });
+    assert.deepEqual(result.warnings, []);
+    assert.deepEqual(validateEntry(result.entry), result.entry);
+    const created = '2026-09-30T00:00:00.000Z';
+    const backup = serializeBackup([{ ...result.entry, id: 1, created }], created);
+    assert.equal(parseBackup(backup)[0].source, result.entry.source);
+    assertNoBaiduSecrets({ result, backup });
+  });
+
+  test(`${provider}: Baidu failures retain the dictionary and expose only safe warning codes`, async (context) => {
+    for (const failure of baiduFailures) {
+      const calls: string[] = [];
+      const transport = context.mock.fn(failure.transport);
+      const result = await lookup('could', async (url) => {
+        calls.push(url);
+        return json(fixture);
+      }, undefined, provider, { ...baiduOptions, credentials: failure.credentials, transport });
+      assert.deepEqual(calls, [endpoints[provider]('could')], failure.code);
+      assert.equal(transport.mock.callCount(), failure.calls, failure.code);
+      assert.deepEqual(result.entry, {
+        word: 'could', phonetic: '/kʊd/', pos: 'Verb', definition: 'paired meaning',
+        example: 'A paired example.', translation: '', source,
+      });
+      assert.deepEqual(result.warnings.filter((warning) => warning.code === failure.code), [{ code: failure.code }]);
+      assert.deepEqual(result.warnings.filter((warning) => warning.code !== failure.code), [{ code: 'missingTranslation' }]);
+      assert.deepEqual(validateEntry(result.entry), result.entry);
+      const created = '2026-09-30T00:00:00.000Z';
+      assertNoBaiduSecrets({ result, backup: serializeBackup([{ ...result.entry, id: 1, created }], created) });
+    }
+  });
+
+  test(`${provider}: dictionary failures preserve Baidu without retry or MyMemory fallback`, async (context) => {
+    for (const failure of unavailable) {
+      const calls: string[] = [];
+      const transport = context.mock.fn(async () => baiduTranslation());
+      const result = await lookup('could', async (url) => {
+        calls.push(url);
+        return failure.response();
+      }, undefined, provider, { ...baiduOptions, transport });
+      assert.deepEqual(calls, [endpoints[provider]('could')], failure.name);
+      assert.equal(transport.mock.callCount(), 1);
+      assert.deepEqual(result.entry, {
+        word: 'could', phonetic: '', pos: '', definition: '', example: '', translation: '能够', source: baiduSource,
+      });
+      assert.deepEqual(result.warnings, [
+        { code: 'dictionaryUnavailable' }, { code: 'missingExample' }, { code: 'missingPhonetic' },
+      ]);
+      assert.deepEqual(validateEntry(result.entry), result.entry);
+    }
+  });
+
+  test(`${provider}: failure of both selected routes retains all missing-field warnings`, async (context) => {
+    const calls: string[] = [];
+    const transport = context.mock.fn(async () => { throw new Error(privateDiagnostic); });
+    const result = await lookup('could', async (url) => {
+      calls.push(url);
+      throw new Error(privateDiagnostic);
+    }, undefined, provider, { ...baiduOptions, transport });
+    assert.deepEqual(calls, [endpoints[provider]('could')]);
+    assert.equal(transport.mock.callCount(), 1);
+    assert.deepEqual(result.entry, {
+      word: 'could', phonetic: '', pos: '', definition: '', example: '', translation: '', source: '手动填写',
+    });
+    assert.deepEqual(result.warnings.filter((warning) => warning.code === 'baiduUnavailable'), [{ code: 'baiduUnavailable' }]);
+    assert.deepEqual(result.warnings.filter((warning) => warning.code !== 'baiduUnavailable'), missingWarnings);
+    assert.deepEqual(validateEntry(result.entry), result.entry);
+    assertNoBaiduSecrets(result);
+  });
+
+  test(`${provider}: invalid words, the built-in sample and pre-cancelled Baidu lookups never fetch or sign`, async (context) => {
+    const fetcher = context.mock.fn(async (): Promise<Response> => { assert.fail('must not fetch'); });
+    const transport = context.mock.fn(async () => { assert.fail('must not invoke Baidu transport'); });
+    const signingSalt = context.mock.method(globalThis.crypto, 'getRandomValues', () => { assert.fail('must not create a signing salt'); });
+    let credentialReads = 0;
+    const options: TranslationOptions = {
+      provider: 'baidu', transport,
+      get credentials() { credentialReads++; return baiduCredentials; },
+    };
+    for (const raw of ['../invalid', 'https://example.com', '', 'a'.repeat(81), null, {}, ['could']]) {
+      await assert.rejects(lookup(raw, fetcher, undefined, provider, options), (error) => {
+        assert.ok(error instanceof MessageError);
+        assert.deepEqual(error.detail, { code: 'invalidWord' });
+        assertNoBaiduSecrets(error);
+        return true;
+      });
+    }
+    const result = await lookup(' Investigation ', fetcher, undefined, provider, options);
+    assert.deepEqual(result, { entry: sample, warnings: [] });
+    assert.notEqual(result.entry, sample);
+    const controller = new AbortController();
+    const reason = new DOMException('Synthetic cancellation', 'AbortError');
+    controller.abort(reason);
+    for (const word of ['could', 'investigation'])
+      await assert.rejects(lookup(word, fetcher, controller.signal, provider, options), (error) => error === reason);
+    assert.equal(fetcher.mock.callCount(), 0);
+    assert.equal(transport.mock.callCount(), 0);
+    assert.equal(credentialReads, 0);
+    assert.equal(signingSalt.mock.callCount(), 0);
+  });
+
+  test(`${provider}: cancellation aborts the dictionary and Baidu with the original reason`, async (context) => {
+    for (const reason of [new DOMException('Synthetic cancellation', 'AbortError'), Object.freeze({ cancelled: true })]) {
+      const controller = new AbortController();
+      const calls: string[] = [];
+      const reasons: unknown[] = [];
+      const waitForAbort = (signal?: AbortSignal | null) => new Promise<never>((_resolve, reject) => {
+        assert.ok(signal);
+        signal.addEventListener('abort', () => {
+          reasons.push(signal.reason);
+          reject(signal.reason);
+        }, { once: true });
+      });
+      const transport = context.mock.fn(async (_url: string, signal?: AbortSignal) => waitForAbort(signal));
+      const promise = lookup('could', async (url, options) => {
+        calls.push(url);
+        return waitForAbort(options?.signal);
+      }, controller.signal, provider, { ...baiduOptions, transport });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      controller.abort(reason);
+      await assert.rejects(promise, (error) => error === reason);
+      assert.deepEqual(calls, [endpoints[provider]('could')]);
+      assert.equal(transport.mock.callCount(), 1);
+      assert.equal(reasons.length, 2);
+      reasons.forEach((value) => assert.equal(value, reason));
+    }
+  });
+
+  test(`${provider}: late dictionary and Baidu responses cannot return a cancelled draft`, async (context) => {
+    const controller = new AbortController();
+    const pending: (() => void)[] = [];
+    const transport = context.mock.fn(async () => new Promise<unknown>((resolve) => {
+      pending.push(() => resolve(baiduTranslation()));
+    }));
+    const promise = lookup('could', async () => new Promise<Response>((resolve) => {
+      pending.push(() => resolve(json(fixture)));
+    }), controller.signal, provider, { ...baiduOptions, transport });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort();
+    pending.forEach((resolve) => resolve());
+    await assert.rejects(promise, (error) => error === controller.signal.reason);
+    assert.equal(pending.length, 2);
+    assert.equal(transport.mock.callCount(), 1);
+  });
+
+  test(`${provider}: dictionary deadlines and Baidu transport timeouts preserve partial successes`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    for (const timedOut of ['dictionary', 'baidu', 'both']) {
+      const dictionaryTimedOut = timedOut !== 'baidu';
+      const baiduTimedOut = timedOut !== 'dictionary';
+      const calls: string[] = [];
+      const reasons: unknown[] = [];
+      let baiduTimeouts = 0;
+      const waitForTimeout = (signal?: AbortSignal | null) => new Promise<never>((_resolve, reject) => {
+        assert.ok(signal);
+        signal.addEventListener('abort', () => {
+          reasons.push(signal.reason);
+          reject(signal.reason);
+        }, { once: true });
+      });
+      // The injected transport owns its deadline, just like the real JSONP transport.
+      const transport = context.mock.fn(async () => {
+        if (!baiduTimedOut) return baiduTranslation();
+        return new Promise<never>((_resolve, reject) => {
+          setTimeout(() => {
+            baiduTimeouts++;
+            reject(new MessageError({ code: 'baiduTimedOut' }));
+          }, 30000);
+        });
+      });
+      const promise = lookup('could', async (url, options) => {
+        calls.push(url);
+        return dictionaryTimedOut ? waitForTimeout(options?.signal) : json(fixture);
+      }, undefined, provider, { ...baiduOptions, transport });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      context.mock.timers.tick(29999);
+      assert.equal(reasons.length, 0);
+      assert.equal(baiduTimeouts, 0);
+      context.mock.timers.tick(1);
+      const result = await promise;
+      assert.deepEqual(calls, [endpoints[provider]('could')]);
+      assert.equal(transport.mock.callCount(), 1);
+      assert.equal(reasons.length, dictionaryTimedOut ? 1 : 0);
+      assert.equal(baiduTimeouts, baiduTimedOut ? 1 : 0);
+      assert.ok(reasons.every((reason) => reason instanceof DOMException && reason.name === 'TimeoutError'));
+      assert.equal(result.entry.definition, dictionaryTimedOut ? '' : 'paired meaning');
+      assert.equal(result.entry.example, dictionaryTimedOut ? '' : 'A paired example.');
+      assert.equal(result.entry.phonetic, dictionaryTimedOut ? '' : '/kʊd/');
+      assert.equal(result.entry.translation, baiduTimedOut ? '' : '能够');
+      assert.equal(result.entry.source, timedOut === 'both' ? '手动填写' : dictionaryTimedOut ? baiduSource : source);
+      assert.deepEqual(result.warnings.filter((warning) => warning.code === 'baiduTimedOut'), baiduTimedOut ? [{ code: 'baiduTimedOut' }] : []);
+      assert.deepEqual(result.warnings.filter((warning) => warning.code !== 'baiduTimedOut'), [
+        ...(dictionaryTimedOut ? [{ code: 'dictionaryUnavailable' }] : []),
+        ...(baiduTimedOut ? [{ code: 'missingTranslation' }] : []),
+        ...(dictionaryTimedOut ? [{ code: 'missingExample' }, { code: 'missingPhonetic' }] : []),
+      ]);
+      assert.deepEqual(validateEntry(result.entry), result.entry);
+      assertNoBaiduSecrets(result);
+    }
   });
 
   test(`${provider}: endpoints and attribution encode the exact normalized query`, async () => {

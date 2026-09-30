@@ -163,6 +163,7 @@ test('only exact known source labels translate, not URLs, unknown content or old
     ['手动填写', 'Entered manually'],
     ['用户提供的示例', 'User-provided example'],
     ['MyMemory（机器翻译）', 'MyMemory (machine translation)'],
+    ['Baidu（机器翻译）', 'Baidu (machine translation)'],
     ['词典摘录，可经编辑', 'Dictionary excerpt; may be edited'],
   ]) {
     assert.equal(sourceLabel('zh-CN', original), original);
@@ -171,6 +172,7 @@ test('only exact known source labels translate, not URLs, unknown content or old
   for (const value of [
     '', 'FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com', 'CC BY-SA 4.0', '用户自己的中文笔记：手动填写',
     'Wiktionary: https://en.wiktionary.org/wiki/apple', 'MyMemory（机器翻译） | 旧来源',
+    'Baidu（机器翻译） | 旧来源', 'Baidu(机器翻译)', '用户笔记：Baidu（机器翻译）',
     '<img src=x onerror=alert(1)>', '__proto__',
   ]) {
     assert.equal(sourceLabel('zh-CN', value), value);
@@ -213,16 +215,18 @@ test('entry and backup validators expose stable codes while retaining Chinese di
 });
 
 test('formatting UI messages and sources does not alter entries or backup protocol', () => {
-  const entry = { ...sample, id: 1, created: '2024-02-29T12:34:56.789Z' };
-  const before = serializeBackup([entry], entry.created);
-  for (const locale of ['zh-CN', 'en'] as const) {
-    sourceLabel(locale, entry.source);
-    formatDate(locale, entry.created);
-    formatMessage(locale, { code: 'saved' });
-    assert.equal(serializeBackup([entry], entry.created), before);
+  for (const source of [sample.source, 'Baidu（机器翻译）', 'EnglishDictionaryAPI.com | Baidu（机器翻译）']) {
+    const entry = { ...sample, source, id: 1, created: '2024-02-29T12:34:56.789Z' };
+    const before = serializeBackup([entry], entry.created);
+    for (const locale of ['zh-CN', 'en'] as const) {
+      source.split(' | ').forEach(part => sourceLabel(locale, part));
+      formatDate(locale, entry.created);
+      formatMessage(locale, { code: 'saved' });
+      assert.equal(serializeBackup([entry], entry.created), before);
+    }
+    assert.equal(parseBackup(before)[0].translation, '调查');
+    assert.equal(parseBackup(before)[0].source, source);
   }
-  assert.equal(parseBackup(before)[0].translation, '调查');
-  assert.equal(parseBackup(before)[0].source, '用户提供的示例');
 });
 
 test('duplicate message parameters survive transaction abort and original entries remain intact', async t => {
