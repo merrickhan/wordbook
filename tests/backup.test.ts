@@ -12,7 +12,7 @@ const entry: DatedEntry = { ...sample, created };
 const stored: StoredEntry = { ...entry, id: 1 };
 const envelope = (entries: unknown = [entry]) => ({ format: 'wordbook', version: 1, exportedAt, entries });
 
-test('备份信封、所有业务字段及日期往返一致，按 ID 升序且不导出 ID', () => {
+test('backup envelopes, business fields and dates round-trip in ascending ID order without exporting IDs', () => {
   const values = [
     { ...stored, word: 'third', id: 90, created: '2020-01-01T00:00:00.000Z' },
     { ...stored, word: 'first', id: 4, created: '2025-01-01T00:00:00.000Z' },
@@ -36,7 +36,7 @@ test('备份信封、所有业务字段及日期往返一致，按 ID 升序且�
   assert.deepEqual(values, original);
 });
 
-test('双音标、单口音及未标口音的七字段、日期和来源经 v1 导出导入不变', async t => {
+test('v1 export and import preserve all seven fields, dates and sources for dual, single and unmarked accents', async t => {
   const freeSource = 'FreeDictionaryAPI.com | Wiktionary: https://en.wiktionary.org/wiki/tomato | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑';
   const englishSource = freeSource.replace('FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com');
   const values = [
@@ -62,23 +62,25 @@ test('双音标、单口音及未标口音的七字段、日期和来源经 v1 �
   assert.equal(serializeBackup(restored, exportedAt), text);
 });
 
-test('Baidu 来源经 v1 备份往返不变，额外凭据和设置字段不进入备份或恢复词条', () => {
-  const credentials = { appid: '123456789', key: 'synthetic-key-only' };
-  const machineSource = 'Baidu（机器翻译）';
-  const sources = [machineSource, ...['FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com'].map(provider =>
+test('v1 backups preserve opaque sources while excluding unrelated nested fields without mutating inputs', () => {
+  const metadata = { category: 'synthetic-category-only', tags: ['synthetic-tag-only'] };
+  const machineSource = 'MyMemory（机器翻译）';
+  const historicalSource = 'Historical source: an arbitrary imported note';
+  const sources = [machineSource, historicalSource, ...['FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com'].map(provider =>
     provider + ' | Wiktionary: https://en.wiktionary.org/wiki/could' +
-    ' | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑 | ' + machineSource)];
+    ' | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑 | ' + machineSource),
+    historicalSource + ' | ' + machineSource];
   const values = sources.map(source => ({ ...entry, word: 'could', translation: '能够', source }));
   const records = values.map((value, index) => ({
-    ...value, id: index + 1, ...credentials, credentials, baiduCredentials: credentials,
-    provider: 'baidu', translationProvider: 'baidu', dictionaryProvider: 'english-dictionary',
-    settings: { translationProvider: 'baidu', baiduCredentials: credentials, locale: 'en' },
+    ...value, id: index + 1, ...metadata, metadata,
+    provider: 'synthetic-provider', dictionaryProvider: 'english-dictionary',
+    extra: { metadata, display: { color: 'synthetic-color-only', expanded: true } },
   }));
   const original = structuredClone(records);
   const text = serializeBackup(records, exportedAt);
   assert.deepEqual(JSON.parse(text), envelope(values));
-  for (const secret of Object.values(credentials)) assert.equal(text.includes(secret), false);
-  for (const field of ['appid', 'key', 'credentials', 'baiduCredentials', 'provider', 'translationProvider', 'dictionaryProvider', 'settings'])
+  for (const ignored of [metadata.category, ...metadata.tags, 'synthetic-color-only']) assert.equal(text.includes(ignored), false);
+  for (const field of ['category', 'tags', 'metadata', 'provider', 'dictionaryProvider', 'extra', 'display', 'color', 'expanded'])
     assert.equal(text.includes('"' + field + '"'), false);
   assert.deepEqual(parseBackup(text), values);
   assert.deepEqual(parseBackup(JSON.stringify(envelope(records))), values);
@@ -86,7 +88,7 @@ test('Baidu 来源经 v1 备份往返不变，额外凭据和设置字段不进�
   assert.deepEqual(records, original);
 });
 
-test('空库允许导出和导入，默认导出时间是合法 UTC ISO', () => {
+test('empty notebooks can be exported and imported with a valid default UTC ISO export time', () => {
   assert.deepEqual(parseBackup(serializeBackup([], exportedAt)), []);
   const before = Date.now();
   const backup = JSON.parse(serializeBackup([]));
@@ -95,7 +97,7 @@ test('空库允许导出和导入，默认导出时间是合法 UTC ISO', () => 
   assert.ok(Date.parse(backup.exportedAt) <= Date.now());
 });
 
-test('导入重新分配 ID、保留创建时间，恢复后相对顺序不变', async t => {
+test('import assigns new IDs while preserving creation times and relative order after restoration', async t => {
   const originals: StoredEntry[] = [
     { ...stored, id: 90, word: 'third', created: '2020-01-01T00:00:00.000Z' },
     { ...stored, id: 4, word: 'first', created: '2025-01-01T00:00:00.000Z' },
@@ -115,7 +117,7 @@ test('导入重新分配 ID、保留创建时间，恢复后相对顺序不变',
   assert.deepEqual(await store.importEntries(parsed), { imported: 0, skipped: 3 });
 });
 
-test('删除后的 v1 备份排除词条，删除前备份以新 ID 恢复原字段并跳过保留项', async t => {
+test('v1 backups exclude deleted entries and earlier backups restore original fields with new IDs while skipping survivors', async t => {
   const store = createWordStore({ name: 'removed-backup', indexedDB: new IDBFactory(), now: () => new Date(exportedAt) });
   t.after(() => store.close());
   const values: DatedEntry[] = [
@@ -157,7 +159,7 @@ test('删除后的 v1 备份排除词条，删除前备份以新 ID 恢复原字
   assert.deepEqual(JSON.parse(serializeBackup(restored, exportedAt)), envelope([values[0], values[2], values[1]]));
 });
 
-test('解析采用字段白名单和规范化，合法重复项留给导入计数', () => {
+test('parsing whitelists and normalizes fields while leaving valid duplicates for import to count', () => {
   const values = [
     { ...entry, word: ' APPLE ', translation: ' 苹果 ', id: 123, extra: 'ignored' },
     { ...entry, word: 'apple', translation: '第二条' },
@@ -168,7 +170,7 @@ test('解析采用字段白名单和规范化，合法重复项留给导入计�
   ]);
 });
 
-test('非法 JSON、结构、格式和未知版本明确拒绝', () => {
+test('invalid JSON, structures, formats and unknown versions are explicitly rejected', () => {
   for (const text of ['', '{', 'not json', '{"format":}'])
     assert.throws(() => parseBackup(text), /JSON/);
   for (const value of [null, [], 'wordbook', 1, {}, { entries: [] }, { ...envelope(), extra: true }])
@@ -181,7 +183,7 @@ test('非法 JSON、结构、格式和未知版本明确拒绝', () => {
     assert.throws(() => parseBackup(JSON.stringify(envelope(entries))), /数组/);
 });
 
-test('备份所有字段和日期都必须合法，重复条目本身坏也不能跳过', () => {
+test('all backup fields and dates must be valid, including entries that would otherwise be skipped as duplicates', () => {
   for (const invalid of [
     null, [], { ...entry, word: 12 }, { ...entry, example: null }, { ...entry, source: 'x'.repeat(2001) },
     { ...entry, created: '2023-02-29T12:34:56.789Z' },
@@ -205,11 +207,11 @@ test('备份所有字段和日期都必须合法，重复条目本身坏也不�
     assert.throws(() => serializeBackup([{ ...stored, id } as StoredEntry], exportedAt), /编号无效/);
 });
 
-test('稀疏词条数组不能导出成无法回导的 null 条目', () => {
+test('sparse entry arrays cannot be exported as null entries that cannot be reimported', () => {
   assert.throws(() => serializeBackup(new Array<StoredEntry>(1), exportedAt), /内容无效/);
 });
 
-test('导入大小按 UTF-8 字节计算，恰好 10 MiB 接受，超限拒绝不截断', () => {
+test('import limits count UTF-8 bytes, accepting exactly 10 MiB and rejecting larger inputs without truncation', () => {
   assert.equal(MAX_BACKUP_BYTES, 10 * 1024 * 1024);
   const text = JSON.stringify(envelope());
   const padded = text + ' '.repeat(MAX_BACKUP_BYTES - Buffer.byteLength(text, 'utf8'));
@@ -219,7 +221,7 @@ test('导入大小按 UTF-8 字节计算，恰好 10 MiB 接受，超限拒绝�
   assert.throws(() => parseBackup(' '.repeat(MAX_BACKUP_BYTES + 1)), /10 MiB/);
 });
 
-test('多字节内容超过字节限制时导入和导出均拒绝', () => {
+test('import and export reject multibyte content that exceeds the byte limit', () => {
   const values: StoredEntry[] = Array.from({ length: 2000 }, (_, index) => ({
     ...stored, id: index + 1, translation: '中'.repeat(2000),
   }));
@@ -230,7 +232,7 @@ test('多字节内容超过字节限制时导入和导出均拒绝', () => {
   assert.throws(() => serializeBackup(values, exportedAt), /10 MiB/);
 });
 
-test('最多 10000 条允许往返，10001 条在导入和导出均拒绝', () => {
+test('up to 10000 entries round-trip, while 10001 entries are rejected on both import and export', () => {
   assert.equal(MAX_BACKUP_ENTRIES, 10000);
   const values = Array.from({ length: MAX_BACKUP_ENTRIES }, (_, index) => ({ ...stored, id: index + 1 }));
   assert.equal(parseBackup(serializeBackup(values, exportedAt)).length, MAX_BACKUP_ENTRIES);

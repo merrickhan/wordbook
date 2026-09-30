@@ -245,42 +245,6 @@ main {
   margin-left: auto;
 }
 
-.translation-choice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-}
-
-.translation-choice label {
-  color: var(--muted);
-}
-
-.translation-choice select {
-  margin-left: auto;
-}
-
-.baidu-settings {
-  margin-block: 4px 12px;
-  border-bottom: 1px solid var(--divider);
-}
-
-.baidu-settings summary span {
-  margin-left: 8px;
-  font-size: var(--text-small);
-}
-
-.baidu-settings .fields {
-  margin-block: 12px;
-}
-
-.settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  padding-bottom: 8px;
-}
-
 select:disabled {
   opacity: 0.55;
   cursor: wait;

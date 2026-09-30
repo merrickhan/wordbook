@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 
-# 不取消进行中的部署，同一时间只允许一个 Pages 工作流运行。
+# Run one Pages workflow at a time without canceling an in-progress deployment.
 concurrency:
   group: pages
   cancel-in-progress: false

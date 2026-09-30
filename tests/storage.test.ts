@@ -37,7 +37,7 @@ function openDatabase(factory: IDBFactory, name: string, version: number): Promi
   });
 }
 
-test('库名使用稳定部署目录，忽略页面名、hash、query，不跨项目混用', () => {
+test('database names use stable deployment directories, ignoring page names, fragments and queries without mixing projects', () => {
   for (const url of [
     'https://example.com/wordbook/',
     'https://example.com/wordbook/?search=apple#word',
@@ -49,7 +49,7 @@ test('库名使用稳定部署目录，忽略页面名、hash、query，不跨�
   assert.notEqual(databaseName('https://example.com/a/'), databaseName('https://example.com/b/'));
 });
 
-test('创建 store 不访问 IndexedDB；不支持时读取友好失败', async () => {
+test('creating a store does not access IndexedDB, and unsupported reads fail with a helpful message', async () => {
   assert.equal(globalThis.indexedDB, undefined);
   const store = createWordStore({ name: 'unsupported' });
   await assert.rejects(store.list(), /不支持.*IndexedDB/);
@@ -57,7 +57,7 @@ test('创建 store 不访问 IndexedDB；不支持时读取友好失败', async 
   await store.close();
 });
 
-test('保存采用七个字段和注入时间，倒序读取，重复词保留原内容', async t => {
+test('saving uses seven fields and an injected time, lists in reverse order and preserves original duplicate content', async t => {
   const factory = new IDBFactory();
   const store = createWordStore({ name: 'save', indexedDB: factory, now: () => new Date(created) });
   t.after(() => store.close());
@@ -78,7 +78,7 @@ test('保存采用七个字段和注入时间，倒序读取，重复词保留�
   assert.deepEqual(await other.list(), []);
 });
 
-test('按 ID 删除后重开和另一连接均可见，其余内容、倒序和部署目录不受影响', async t => {
+test('deletion by ID survives reopening and is visible to peers without affecting other content, order or deployments', async t => {
   const factory = new IDBFactory();
   const name = databaseName('https://example.test/remove/');
   const store = createWordStore({ name, indexedDB: factory, now: () => new Date(created) });
@@ -117,7 +117,7 @@ test('按 ID 删除后重开和另一连接均可见，其余内容、倒序和�
   assert.deepEqual(await other.list(), [otherRemoved, otherFirst]);
 });
 
-test('删除不存在或已删除的 ID 幂等，最大安全整数合法且不影响其他记录', async t => {
+test('deleting missing or already deleted IDs is idempotent, and the maximum safe integer leaves other records intact', async t => {
   const store = createWordStore({ name: 'missing-remove', indexedDB: new IDBFactory() });
   t.after(() => store.close());
   assert.equal(await store.remove(1), undefined);
@@ -131,7 +131,7 @@ test('删除不存在或已删除的 ID 幂等，最大安全整数合法且不�
   }
 });
 
-test('双音标、单口音及旧 IPA 保存重开后完整保留，库名和 v1 不含词典偏好', async t => {
+test('dual-accent, single-accent and legacy IPA survive reopening without dictionary preferences in database names or v1 records', async t => {
   const factory = new IDBFactory();
   const name = databaseName('https://example.test/wordbook/');
   const store = createWordStore({ name, indexedDB: factory, now: () => new Date(created) });
@@ -159,7 +159,7 @@ test('双音标、单口音及旧 IPA 保存重开后完整保留，库名和 v1
   assert.deepEqual(raw, expected);
 });
 
-test('数据库 v1 只有 words 仓库、自动递增 id 和唯一 word 索引', async t => {
+test('database v1 contains only the words store with an auto-incrementing id and a unique word index', async t => {
   const factory = new IDBFactory();
   const store = createWordStore({ name: 'schema', indexedDB: factory });
   t.after(() => store.close());
@@ -176,7 +176,7 @@ test('数据库 v1 只有 words 仓库、自动递增 id 和唯一 word 索引',
   assert.equal(words.index('word').unique, true);
 });
 
-test('非法保存和无效设备时间不写入，后续有效操作仍可执行', async t => {
+test('invalid entries and device times prevent writes without blocking later valid operations', async t => {
   const factory = new IDBFactory();
   let invalidClock = true;
   const store = createWordStore({ name: 'validation', indexedDB: factory, now: () => new Date(invalidClock ? NaN : created) });
@@ -188,7 +188,7 @@ test('非法保存和无效设备时间不写入，后续有效操作仍可执�
   assert.equal((await store.save(sample)).id, 1);
 });
 
-test('非法删除 ID 在打开数据库前以 storageInvalidId 拒绝，不能转换为键或范围删除', async t => {
+test('invalid deletion IDs reject with storageInvalidId before opening the database without key coercion or range deletion', async t => {
   const factory = new IDBFactory();
   const seed = createWordStore({ name: 'invalid-remove', indexedDB: factory });
   t.after(() => seed.close());
@@ -218,7 +218,7 @@ test('非法删除 ID 在打开数据库前以 storageInvalidId 拒绝，不能�
   assert.deepEqual(await store.list(), [second]);
 });
 
-test('两连接并发保存同一规范词只有一个成功，不覆盖先写入者', async t => {
+test('concurrent saves of the same normalized word from two connections succeed only once without overwriting the first writer', async t => {
   const factory = new IDBFactory();
   const left = createWordStore({ name: 'concurrent', indexedDB: factory });
   const right = createWordStore({ name: 'concurrent', indexedDB: factory });
@@ -237,7 +237,7 @@ test('两连接并发保存同一规范词只有一个成功，不覆盖先写�
   assert.deepEqual(await right.list(), [saved[0].value]);
 });
 
-test('另一连接删除再保存同词分配新 ID，旧连接删除过期 ID 不会误删新词', async t => {
+test('a peer deleting and readding a word gets a new ID that cannot be deleted through the stale ID', async t => {
   const factory = new IDBFactory();
   const left = createWordStore({ name: 'remove-readd', indexedDB: factory, now: () => new Date(earlier) });
   const right = createWordStore({ name: 'remove-readd', indexedDB: factory, now: () => new Date(created) });
@@ -258,7 +258,7 @@ test('另一连接删除再保存同词分配新 ID，旧连接删除过期 ID �
   assert.deepEqual(await left.list(), [fresh, survivor]);
 });
 
-test('导入已有库词优先、文件内首条优先，保留日期并丢弃客户端 ID', async t => {
+test('imports prefer existing words and the first file occurrence, preserving dates and discarding client IDs', async t => {
   const store = createWordStore({ name: 'import', indexedDB: new IDBFactory(), now: () => new Date(created) });
   t.after(() => store.close());
   const existing = await store.save({ ...sample, word: 'apple' });
@@ -279,7 +279,7 @@ test('导入已有库词优先、文件内首条优先，保留日期并丢弃�
   assert.deepEqual(await store.importEntries([]), { imported: 0, skipped: 0 });
 });
 
-test('并发导入在同一读写事务查重，交集不导致整批失败', async t => {
+test('concurrent imports check duplicates within the same read-write transaction without rejecting overlapping batches', async t => {
   const factory = new IDBFactory();
   const left = createWordStore({ name: 'concurrent-import', indexedDB: factory });
   const right = createWordStore({ name: 'concurrent-import', indexedDB: factory });
@@ -293,7 +293,7 @@ test('并发导入在同一读写事务查重，交集不导致整批失败', as
   assert.deepEqual((await left.list()).map(entry => entry.word).sort(), ['left', 'right', 'shared']);
 });
 
-test('坏末项和无效重复项整批拒绝，无部分写入', async t => {
+test('invalid final entries and invalid duplicates reject the whole batch without partial writes', async t => {
   const store = createWordStore({ name: 'invalid-import', indexedDB: new IDBFactory() });
   t.after(() => store.close());
   const original = await store.save(createEntry('existing'));
@@ -310,7 +310,7 @@ test('坏末项和无效重复项整批拒绝，无部分写入', async t => {
   assert.deepEqual(await store.importEntries([dated('valid')]), { imported: 1, skipped: 0 });
 });
 
-test('请求成功后事务中止仍拒绝并原子回滚，随后可以重试', async t => {
+test('transaction aborts after successful requests still reject and roll back atomically, allowing retries', async t => {
   const factory = new IDBFactory();
   let abortAfter = 0;
   let succeeded = 0;
@@ -344,7 +344,7 @@ test('请求成功后事务中止仍拒绝并原子回滚，随后可以重试',
   assert.deepEqual((await store.list()).map(entry => entry.id), [3, 2, 1]);
 });
 
-test('删除请求成功后事务中止仍拒绝，重开保留原记录且重试可提交', async t => {
+test('transaction aborts after successful delete requests reject, preserve records after reopening and allow retries', async t => {
   const factory = new IDBFactory();
   let abort = false;
   let succeeded = 0;
@@ -375,7 +375,7 @@ test('删除请求成功后事务中止仍拒绝，重开保留原记录且重�
   assert.deepEqual(await store.list(), [survivor]);
 });
 
-test('同步删除失败拒绝且不改变词库，随后同一 ID 可以重试', async t => {
+test('synchronous deletion failures reject without changing the notebook and allow retrying the same ID', async t => {
   const factory = new IDBFactory();
   let fail = false;
   observeConnections(factory, db => interceptWrites(db, words => {
@@ -396,7 +396,7 @@ test('同步删除失败拒绝且不改变词库，随后同一 ID 可以重试'
   assert.deepEqual(await store.list(), [survivor]);
 });
 
-test('意外主键 ConstraintError 不是重复词，整批回滚而不吞错', async t => {
+test('unexpected primary-key ConstraintError is not treated as a duplicate word and rolls back the whole batch', async t => {
   const factory = new IDBFactory();
   let inject = false;
   let succeeded = 0;
@@ -421,7 +421,7 @@ test('意外主键 ConstraintError 不是重复词，整批回滚而不吞错', 
   assert.deepEqual(await store.importEntries([dated('first'), dated('conflict')]), { imported: 2, skipped: 0 });
 });
 
-test('同步配额错误友好拒绝并回滚，不污染后续写入', async t => {
+test('synchronous quota errors fail helpfully and roll back without affecting later writes', async t => {
   const factory = new IDBFactory();
   let fail = true;
   observeConnections(factory, db => interceptWrites(db, words => {
@@ -438,7 +438,7 @@ test('同步配额错误友好拒绝并回滚，不污染后续写入', async t 
   assert.equal((await store.save(sample)).id, 1);
 });
 
-test('打开失败不永久缓存 rejected promise，再次调用可以打开', async t => {
+test('open failures do not permanently cache rejected promises and later calls can reopen the database', async t => {
   const factory = new IDBFactory();
   const open = factory.open.bind(factory);
   let attempts = 0;
@@ -454,7 +454,7 @@ test('打开失败不永久缓存 rejected promise，再次调用可以打开', 
   assert.equal(attempts, 2);
 });
 
-test('打开请求异步失败后也可重试，不删除或降级词库', async t => {
+test('asynchronous open failures allow retries without deleting or downgrading the notebook', async t => {
   const factory = new IDBFactory();
   const open = factory.open.bind(factory);
   let fail = true;
@@ -473,7 +473,7 @@ test('打开请求异步失败后也可重试，不删除或降级词库', async
   assert.equal((await store.save(sample)).id, 1);
 });
 
-test('blocked 及时拒绝，迟到的打开连接被关闭，重试仍可成功', { timeout: 5000 }, async t => {
+test('blocked opens reject promptly, close late connections and still allow successful retries', { timeout: 5000 }, async t => {
   const factory = new IDBFactory();
   const seed = createWordStore({ name: 'blocked', indexedDB: factory });
   const original = await seed.save(sample);
@@ -497,7 +497,7 @@ test('blocked 及时拒绝，迟到的打开连接被关闭，重试仍可成功
   upgraded.close();
 });
 
-test('打开中 close 取消等待，后续操作可重新打开', async t => {
+test('close cancels pending opens and later operations can reopen the database', async t => {
   const store = createWordStore({ name: 'close-opening', indexedDB: new IDBFactory() });
   t.after(() => store.close());
   const pending = store.list();
@@ -507,7 +507,7 @@ test('打开中 close 取消等待，后续操作可重新打开', async t => {
   assert.deepEqual(await store.list(), []);
 });
 
-test('close 等待进行中的写事务完成，不丢失已提交数据', async t => {
+test('close waits for active write transactions without losing committed data', async t => {
   const factory = new IDBFactory();
   let duringWrite: (() => void) | undefined;
   observeConnections(factory, db => interceptWrites(db, () => duringWrite?.()));
@@ -522,7 +522,7 @@ test('close 等待进行中的写事务完成，不丢失已提交数据', async
   assert.deepEqual(await store.list(), [saved]);
 });
 
-test('versionchange 主动释放旧连接，后续版本错误明确拒绝', { timeout: 5000 }, async t => {
+test('versionchange releases old connections and subsequent version mismatches explicitly reject', { timeout: 5000 }, async t => {
   const factory = new IDBFactory();
   const store = createWordStore({ name: 'version', indexedDB: factory });
   t.after(() => store.close());
@@ -539,7 +539,7 @@ test('versionchange 主动释放旧连接，后续版本错误明确拒绝', { t
   assert.deepEqual(value, original);
 });
 
-test('非预期连接关闭清除缓存，重新打开后数据仍在', async t => {
+test('unexpected connection closure clears the cache while preserving data after reopening', async t => {
   const factory = new IDBFactory();
   let connection: IDBDatabase | undefined;
   let opens = 0;
@@ -549,7 +549,7 @@ test('非预期连接关闭清除缓存，重新打开后数据仍在', async t 
   const original = await store.save(sample);
   assert.ok(connection);
   const closed = new Promise<void>(resolve => connection!.addEventListener('close', () => resolve(), { once: true }));
-  // fake-indexeddb 6 的声明误写为构造器，运行时实际接收数据库实例。
+  // fake-indexeddb 6 incorrectly declares a constructor parameter; at runtime it accepts a database instance.
   (forceCloseDatabase as unknown as (db: IDBDatabase) => void)(connection);
   await closed;
   assert.deepEqual(await store.list(), [original]);

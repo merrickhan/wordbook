@@ -61,7 +61,7 @@ export function createWordStore(options: StoreOptions) {
     }
     opening = pending;
     try {
-      // 延迟访问浏览器 API；无法使用 IndexedDB 时仍能显示页面和重试入口。
+      // Defer browser API access so the page and retry controls can render without IndexedDB.
       const factory = options.indexedDB ?? globalThis.indexedDB;
       if (!factory)
         throw new MessageError({ code: 'storageUnsupported' });
@@ -70,7 +70,7 @@ export function createWordStore(options: StoreOptions) {
         try {
           request.transaction?.abort();
         } catch {
-          // 外部关闭或失败可能已经中止升级事务。
+          // An external close or failure may have already aborted the upgrade transaction.
         }
       };
       request.onupgradeneeded = () => {
@@ -94,7 +94,7 @@ export function createWordStore(options: StoreOptions) {
         fail(new MessageError({ code: 'storageBlocked' }));
       request.onsuccess = () => {
         const db = request.result;
-        // blocked 或 close 后打开请求仍可能返回，不能遗留连接或恢复过期缓存。
+        // A request may finish after blocked or close; avoid leaking connections or restoring stale caches.
         if (settled) {
           db.close();
           return;
@@ -135,7 +135,7 @@ export function createWordStore(options: StoreOptions) {
         try {
           transaction.abort();
         } catch {
-          // 已中止的事务仍会触发 onabort；oncomplete 也绝不把失败报告为成功。
+          // Aborted transactions still fire onabort; oncomplete must never report a failure as success.
         }
       };
       const watch: WatchRequest = (request, success) => {
@@ -151,10 +151,10 @@ export function createWordStore(options: StoreOptions) {
       transaction.onabort = () => reject(failure ?? storageError(
         transaction.error ?? new DOMException('Aborted', 'AbortError'),
       ));
-      // 请求成功不代表落盘成功，只有整个事务提交后才返回结果。
+      // Request success does not guarantee persistence; return results only after the transaction commits.
       transaction.oncomplete = () => {
         if (failure) reject(failure);
-        else if (!hasResult) reject(storageError(new Error('事务未返回结果')));
+        else if (!hasResult) reject(storageError(new Error('Transaction returned no result')));
         else resolve(value);
       };
       try {
@@ -219,7 +219,7 @@ export function createWordStore(options: StoreOptions) {
 
   async function importEntries(values: readonly DatedEntry[]): Promise<{ imported: number; skipped: number }> {
     if (!Array.isArray(values)) throw new MessageError({ code: 'importEntriesInvalid' });
-    // 包括重复项在内，先校验整批内容，再开始唯一的读写事务。
+    // Validate the entire batch, including duplicates, before starting a single readwrite transaction.
     const entries = Array.from(values, validateDatedEntry);
     return transact('readwrite', (words, watch, result) => {
       const counts = { imported: 0, skipped: 0 };

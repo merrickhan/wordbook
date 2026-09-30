@@ -17,19 +17,6 @@ const chinese = {
   dictionary: '词典',
   dictionaryHint: '切换会取消当前查询，保留已完成草稿。',
   dictionaryAccentHint: '此词典不标注口音。',
-  translationProvider: '中文补全',
-  translationHint: '词典中文优先，所选翻译补缺。切换会取消当前查询，保留已完成草稿。',
-  baiduSettings: '百度设置',
-  baiduConfigured: '已配置',
-  baiduUnconfigured: '未配置',
-  baiduAppid: '百度 APPID',
-  baiduKey: '百度密钥',
-  baiduSave: '保存配置',
-  baiduClear: '清除配置',
-  baiduEditHint: '修改时需完整填写两项；保存前不生效。密钥保存后不回显，保存不会发起验证请求。',
-  baiduPrivacy: '仅在可信页面填写。凭据以明文存于当前浏览器，同源脚本可能读取；不会进入词条或备份。',
-  baiduRequestHint: '查词会并行请求百度，即使译文未采用或查询已取消，也可能计费。不自动重试。',
-  baiduSource: 'Baidu（机器翻译）',
   phonetic: '音标',
   phoneticHint: 'US 为美音，UK 为英音。可填写 US /…/ · UK /…/；不确定口音时只填音标。',
   accentLabels: 'US：美音；UK：英音',
@@ -91,19 +78,6 @@ export const ui: Record<Locale, UI> = {
     dictionary: 'Dictionary',
     dictionaryHint: 'Switching cancels active lookups; completed drafts stay.',
     dictionaryAccentHint: 'Accents are not labeled.',
-    translationProvider: 'Chinese completion',
-    translationHint: 'Dictionary Chinese comes first; the selected translator fills gaps. Switching cancels active lookups, not completed drafts.',
-    baiduSettings: 'Baidu settings',
-    baiduConfigured: 'Configured',
-    baiduUnconfigured: 'Not configured',
-    baiduAppid: 'Baidu APPID',
-    baiduKey: 'Baidu secret key',
-    baiduSave: 'Save settings',
-    baiduClear: 'Clear settings',
-    baiduEditHint: 'Enter both fields to update. Changes apply only after saving. The saved key is not displayed; saving does not test the API.',
-    baiduPrivacy: 'Use only a trusted deployment. Credentials are stored as plain text in this browser and may be read by same-origin scripts. They are excluded from entries and backups.',
-    baiduRequestHint: 'Lookups request Baidu in parallel. Charges may apply even if its translation is unused or you cancel. No automatic retries.',
-    baiduSource: 'Baidu (machine translation)',
     phonetic: 'IPA',
     phoneticHint: 'US = American, UK = British. Use US /…/ · UK /…/; omit labels if the accent is unknown.',
     accentLabels: 'US: American; UK: British',
@@ -190,23 +164,6 @@ export const messages: Record<Locale, MessageCatalog> = {
     missingExample: 'The dictionary has no example for this meaning. You can add the sentence where you found the word.',
     missingPhonetic: 'No IPA transcription was found.',
     phoneticOmitted: 'Some IPA transcriptions were too long and were omitted in full. Check the source to add them manually.',
-    baiduNotConfigured: 'Baidu is not configured. Open Baidu settings and save your APPID and secret key.',
-    baiduInvalidCredentials: 'APPID must contain 1–64 digits; the key must contain 1–256 characters without whitespace or control characters. Enter both fields in full.',
-    baiduAuthFailed: 'Baidu authentication failed. Check your APPID, key, and whether General Text Translation is enabled.',
-    baiduRateLimited: 'Baidu is receiving requests too frequently. Try again manually later.',
-    baiduQuota: 'Your Baidu account has insufficient balance or quota. Check the Baidu Translation Open Platform.',
-    baiduIpBlocked: 'Baidu restricted this IP. Check the IP allowlist and restrictions on multiple APPIDs sharing an IP.',
-    baiduUnavailable: 'Baidu translation is unavailable. Check the network, browser restrictions, or service status. No other translator was used.',
-    baiduInvalidResponse: 'Baidu returned no usable Chinese translation. You can add one manually.',
-    baiduTimedOut: 'Baidu translation exceeded the 30-second limit. Try again manually later.',
-    baiduSettingsReadFailed: 'Cannot read local Baidu settings. This page is not using a key. Check browser storage permissions.',
-    baiduSettingsInvalid: 'The stored Baidu settings are invalid. Enter and save both fields again, or clear the settings.',
-    baiduSettingsSaved: 'Saved in this browser. The Baidu API has not been verified; look up a word and check the result.',
-    baiduSettingsSaveFailed: 'Settings could not be saved. The previously active settings are still in use. Check browser storage permissions or space.',
-    baiduSettingsCleared: 'Baidu settings for this deployment have been cleared.',
-    baiduSettingsClearFailed: 'This page stopped using the key, but local storage could not be cleared. Old settings may return after a reload. Check browser storage settings.',
-    baiduSettingsUpdated: 'Baidu settings changed in another tab. The active lookup was cancelled; unsaved settings inputs were kept.',
-    translationPreferenceNotSaved: 'The translator selection applies only to this page; it could not be saved.',
     deleted: ({ word }) => `Deleted “${word}” from your notebook.`,
     duplicateWord: ({ word }) => `“${word}” is already in your notebook. The original entry was kept.`,
     imported: ({ imported, skipped }) =>
@@ -226,7 +183,6 @@ export function sourceLabel(locale: Locale, value: string): string {
     case '手动填写': return ui[locale].manualSource;
     case '用户提供的示例': return ui[locale].sampleSource;
     case 'MyMemory（机器翻译）': return ui[locale].machineSource;
-    case 'Baidu（机器翻译）': return ui[locale].baiduSource;
     case '词典摘录，可经编辑': return ui[locale].dictionarySource;
     default: return value;
   }
@@ -255,7 +211,7 @@ export function writeLocale(namespace: string, locale: Locale, getStorage: Stora
     storage.setItem(`${namespace}:locale`, locale);
     return true;
   } catch {
-    // 偏好不可持久化时仍允许切换，不覆盖查词或备份的提示。
+    // Allow switching without persistence; leave lookup and backup feedback unchanged.
     return false;
   }
 }

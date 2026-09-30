@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@noble/hashes':
-        specifier: 2.4.0
-        version: 2.4.0
       lucide-react:
         specifier: ^1.31.0
         version: 1.31.0(react@19.2.6)
@@ -234,10 +231,6 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
-
-  '@noble/hashes@2.4.0':
-    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
-    engines: {node: '>= 20.19.0'}
 
   '@oxc-project/types@0.130.0':
     resolution: {integrity: sha512-ibD2usx9JRu7f5pu2tMKMI4cpA4NgXJQoYRP4pQ7Pxmn1l6k/53qWtQWZayhYy3X4QZkt90Ot+mJEaeXouio6Q==}
@@ -729,8 +722,6 @@ snapshots:
       '@emnapi/runtime': 1.10.0
       '@tybys/wasm-util': 0.10.2
     optional: true
-
-  '@noble/hashes@2.4.0': {}
 
   '@oxc-project/types@0.130.0': {}
 

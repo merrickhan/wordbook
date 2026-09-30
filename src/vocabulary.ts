@@ -1,16 +1,14 @@
-// 浏览器直接查询公开词典；失败时保留草稿，不伪造缺失的释义。
+// Query public dictionaries in the browser; keep drafts without inventing missing meanings.
 import { createEntry, sample, validWord, type Entry } from './entry';
 import { MessageError, type Message } from './messages';
 import { DEFAULT_DICTIONARY_PROVIDER, dictionaryProviders, type DictionaryProvider } from './dictionary-providers';
 import { formatPhonetics } from './phonetics';
-import { translateBaidu, type BaiduTransport } from './baidu-translation';
-import { DEFAULT_TRANSLATION_PROVIDER, translationProviders, type TranslationProvider, type BaiduCredentials } from './translation-providers';
 
-export type TranslationOptions = {
-  provider?: TranslationProvider;
-  credentials?: BaiduCredentials | null;
-  transport?: BaiduTransport;
-};
+const MYMEMORY_SOURCE = 'MyMemory（机器翻译）';
+
+export function hasMyMemorySource(source: string): boolean {
+  return source.split(' | ').includes(MYMEMORY_SOURCE);
+}
 
 type LookupResult = { entry: Entry; warnings: Message[] };
 type Fetcher = (url: string, options?: RequestInit) => Promise<Response>;
@@ -137,7 +135,6 @@ export async function lookup(
   fetcher: Fetcher = fetch,
   signal?: AbortSignal,
   provider: DictionaryProvider = DEFAULT_DICTIONARY_PROVIDER,
-  translation: TranslationOptions = {},
 ): Promise<LookupResult> {
   if (!validWord(raw)) throw new MessageError({ code: 'invalidWord' });
   if (signal?.aborted) throw signal.reason;
@@ -149,7 +146,7 @@ export async function lookup(
     const cancel = () => controller.abort(signal?.reason);
     signal?.addEventListener('abort', cancel, { once: true });
     const timeout = setTimeout(
-      () => controller.abort(new DOMException('查询超时', 'TimeoutError')),
+      () => controller.abort(new DOMException('Lookup timed out', 'TimeoutError')),
       30000,
     );
     try {
@@ -159,7 +156,7 @@ export async function lookup(
         credentials: 'omit',
         referrerPolicy: 'no-referrer',
       });
-      if (!response.ok) throw new Error('查询服务暂时不可用');
+      if (!response.ok) throw new Error('Lookup service is temporarily unavailable');
       return await response.json();
     } finally {
       clearTimeout(timeout);
@@ -170,10 +167,7 @@ export async function lookup(
   const dictionaryUrl = provider === 'english-dictionary'
     ? 'https://englishdictionaryapi.com/api/v1/words/' + encodeURIComponent(word)
     : 'https://freedictionaryapi.com/api/v1/entries/en/' + encodeURIComponent(word) + '?translations=true';
-  const translationProvider = translation.provider ?? DEFAULT_TRANSLATION_PROVIDER;
   async function translate(): Promise<string> {
-    if (translationProvider === 'baidu')
-      return translateBaidu(word, translation.credentials ?? null, signal, translation.transport);
     const response = record(await request(
       'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(word) + '&langpair=en%7Czh-CN',
     ));
@@ -206,10 +200,8 @@ export async function lookup(
 
   if (!entry.translation && trans.status === 'fulfilled' && trans.value) {
     entry.translation = trans.value;
-    sources.push(translationProviders[translationProvider].source);
+    sources.push(MYMEMORY_SOURCE);
   }
-  if (translationProvider === 'baidu' && trans.status === 'rejected')
-    warnings.push(trans.reason instanceof MessageError ? trans.reason.detail : { code: 'baiduUnavailable' });
   entry.source = sources.join(' | ') || '手动填写';
   if (!entry.translation) warnings.push({ code: 'missingTranslation' });
   if (!entry.example) warnings.push({ code: 'missingExample' });

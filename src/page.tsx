@@ -1,4 +1,4 @@
-// 主页面直接访问浏览器词本；仅自动补全会请求外部词典。
+// Keep the notebook in browser storage; only autofill requests external dictionaries and translation.
 import { useState, useEffect, useRef } from 'react';
 import {
   Search,
@@ -12,18 +12,13 @@ import {
   X,
 } from 'lucide-react';
 import { createEntry, sample, validWord, type Entry, type StoredEntry } from './entry';
-import { DICTIONARY_LICENSE_URL, lookup as queryWord, wiktionaryUrl } from './vocabulary';
+import { DICTIONARY_LICENSE_URL, hasMyMemorySource, lookup as queryWord, wiktionaryUrl } from './vocabulary';
 import { createWordStore, databaseName } from './storage';
 import { MAX_BACKUP_BYTES, parseBackup, serializeBackup } from './backup';
 import { errorMessage, MessageError, type Message } from './messages';
 import { ui, formatMessage, sourceLabel, formatDate, readLocale, writeLocale, type Locale } from './i18n';
-import { dictionaryProviders, isDictionaryProvider, readDictionaryProvider, writeDictionaryProvider, type DictionaryProvider } from './dictionary-providers';
+import { dictionaryProviders, isDictionaryProvider, readDictionaryProvider, writeDictionaryProvider, removeLegacyTranslationPreferences, type DictionaryProvider } from './dictionary-providers';
 import { hasAccentLabels } from './phonetics';
-import {
-  translationProviders, isTranslationProvider, readTranslationProvider, writeTranslationProvider,
-  isBaiduCredentials, readBaiduCredentials, writeBaiduCredentials, clearBaiduCredentials,
-  hasMachineTranslationSource, type TranslationProvider,
-} from './translation-providers';
 
 const dbNamespace = databaseName(window.location.href);
 const store = createWordStore({ name: dbNamespace });
@@ -72,14 +67,6 @@ export default function Home() {
   const localeRef = useRef(locale);
   const [provider, setProvider] = useState<DictionaryProvider>(() => readDictionaryProvider(dbNamespace));
   const providerRef = useRef(provider);
-  const [translationProvider, setTranslationProvider] = useState<TranslationProvider>(() => readTranslationProvider(dbNamespace));
-  const translationRef = useRef(translationProvider);
-  const [baiduConfig, setBaiduConfig] = useState(() => readBaiduCredentials(dbNamespace));
-  const credentialsRef = useRef(baiduConfig.credentials);
-  const [appidInput, setAppidInput] = useState(baiduConfig.credentials?.appid ?? '');
-  const [keyInput, setKeyInput] = useState('');
-  const [settingsNotice, setSettingsNotice] = useState<Message | null>(null);
-  const [translationNotice, setTranslationNotice] = useState<Message | null>(null);
   const text = ui[locale];
   const [words, setWords] = useState<StoredEntry[]>([]),
     [loading, setLoading] = useState(true),
@@ -135,6 +122,7 @@ export default function Home() {
 
   useEffect(() => {
     active.current = true;
+    removeLegacyTranslationPreferences(dbNamespace, () => window.localStorage);
     void refresh();
     const onFocus = () => {
       if (!operationLock.current) void refresh(true);
@@ -164,64 +152,9 @@ export default function Home() {
     writeDictionaryProvider(dbNamespace, next);
   }
 
-  function switchTranslationProvider(next: string) {
-    if (operationLock.current || !isTranslationProvider(next) || next === translationRef.current) return;
-    cancelLookup();
-    translationRef.current = next;
-    setTranslationProvider(next);
-    setTranslationNotice(writeTranslationProvider(dbNamespace, next) ? null : { code: 'translationPreferenceNotSaved' });
-  }
-
-  function saveBaiduSettings() {
-    if (operationLock.current) return;
-    setSettingsNotice(null);
-    const credentials = { appid: appidInput, key: keyInput };
-    if (!isBaiduCredentials(credentials)) {
-      setBaiduConfig((previous) => ({ ...previous, error: { code: 'baiduInvalidCredentials' } }));
-      return;
-    }
-    if (!writeBaiduCredentials(dbNamespace, credentials)) {
-      setBaiduConfig((previous) => ({ ...previous, error: { code: 'baiduSettingsSaveFailed' } }));
-      return;
-    }
-    cancelLookup();
-    credentialsRef.current = credentials;
-    setBaiduConfig({ credentials, error: null });
-    setKeyInput('');
-    setSettingsNotice({ code: 'baiduSettingsSaved' });
-  }
-
-  function clearBaiduSettings() {
-    if (operationLock.current) return;
-    cancelLookup();
-    credentialsRef.current = null;
-    setAppidInput('');
-    setKeyInput('');
-    const cleared = clearBaiduCredentials(dbNamespace);
-    setBaiduConfig({ credentials: null, error: cleared ? null : { code: 'baiduSettingsClearFailed' } });
-    setSettingsNotice(cleared ? { code: 'baiduSettingsCleared' } : null);
-  }
-
-  useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== `${dbNamespace}:baiduCredentials` && event.key !== null) return;
-      try {
-        if (event.storageArea !== window.localStorage) return;
-      } catch { return; }
-      const next = readBaiduCredentials(dbNamespace);
-      cancelLookup();
-      credentialsRef.current = next.credentials;
-      setBaiduConfig(next);
-      setSettingsNotice(next.error ? null : { code: 'baiduSettingsUpdated' });
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-
   async function lookup(word: string) {
     if (operationLock.current) throw new MessageError({ code: 'operationBusy' });
     const selectedProvider = providerRef.current;
-    const selectedTranslation = { provider: translationRef.current, credentials: credentialsRef.current };
     queryController.current?.abort();
     const controller = new AbortController();
     queryController.current = controller;
@@ -232,7 +165,7 @@ export default function Home() {
     setDraft(null);
     setWarnings([]);
     try {
-      const result = await queryWord(word, undefined, controller.signal, selectedProvider, selectedTranslation);
+      const result = await queryWord(word, undefined, controller.signal, selectedProvider);
       if (active.current && request === queryRequest.current) {
         setDraft(result.entry);
         setWarnings(result.warnings);
@@ -268,7 +201,7 @@ export default function Home() {
     openDraft(createEntry(input));
   }
 
-  // ref 在同一事件轮次立即上锁，避免仅依靠 disabled 时的快速重复提交。
+  // Lock synchronously with a ref to prevent rapid submissions before disabled takes effect.
   function beginOperation(next: Operation) {
     if (operationLock.current) return false;
     if (!ready.current) {
@@ -297,7 +230,7 @@ export default function Home() {
       setInput('');
       setWarnings([]);
       setNotice({ code: 'saved' });
-      // refresh 自行报告读取失败，不把已提交的保存误报为失败。
+      // refresh reports its own read errors without misreporting a committed save as a failure.
       await refresh(true);
     } catch (error) {
       if (active.current) setError(errorMessage(error));
@@ -377,8 +310,8 @@ export default function Home() {
         context.registerTool(
           {
             name: 'prepare_vocabulary_entry',
-            title: '查询单词并打开编辑',
-            description: '查询英文单词的音标、中文释义和例句，在页面打开待确认条目，不保存。',
+            title: 'Look up a word and open an editable draft',
+            description: 'Look up the IPA transcription, Chinese meaning, and example for an English word. Open a draft for review without saving it.',
             inputSchema: {
               type: 'object',
               properties: { word: { type: 'string', maxLength: 80 } },
@@ -557,81 +490,6 @@ export default function Home() {
             <p id="dictionary-hint" className="field-hint">
               {text.dictionaryHint}{provider === 'english-dictionary' && ' ' + text.dictionaryAccentHint}
             </p>
-            <div className="translation-choice">
-              <label htmlFor="translation-provider">{text.translationProvider}</label>
-              <select
-                id="translation-provider"
-                className="provider-select"
-                value={translationProvider}
-                disabled={!!operation}
-                aria-describedby="translation-hint"
-                onChange={(event) => switchTranslationProvider(event.target.value)}
-              >
-                {Object.entries(translationProviders).map(([id, item]) => (
-                  <option value={id} key={id}>{item.label}</option>
-                ))}
-              </select>
-            </div>
-            <p id="translation-hint" className="field-hint">{text.translationHint}</p>
-            {translationProvider === 'baidu' && <p className="field-hint">{text.baiduRequestHint}</p>}
-            <div role="status" aria-atomic="true">
-              {translationNotice && <p className="message error">{formatMessage(locale, translationNotice)}</p>}
-            </div>
-            <details className="baidu-settings">
-              <summary>{text.baiduSettings}{' '}<span>{baiduConfig.credentials ? text.baiduConfigured : text.baiduUnconfigured}</span></summary>
-              <p id="baidu-privacy" className="field-hint">{text.baiduPrivacy}</p>
-              <p id="baidu-edit-hint" className="field-hint">{text.baiduEditHint}</p>
-              <form noValidate autoComplete="off" onSubmit={(event) => {
-                event.preventDefault();
-                saveBaiduSettings();
-              }}>
-                <div className="fields">
-                  <label>
-                    {text.baiduAppid}
-                    <input
-                      name="baidu-appid"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      aria-describedby="baidu-privacy baidu-edit-hint"
-                      value={appidInput}
-                      disabled={!!operation}
-                      onChange={(event) => setAppidInput(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    {text.baiduKey}
-                    <input
-                      name="baidu-key"
-                      type="password"
-                      autoComplete="off"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      aria-describedby="baidu-privacy baidu-edit-hint"
-                      value={keyInput}
-                      disabled={!!operation}
-                      onChange={(event) => setKeyInput(event.target.value)}
-                    />
-                  </label>
-                </div>
-                <div className="settings-actions">
-                  <button className="primary" type="submit" disabled={!!operation}>{text.baiduSave}</button>
-                  <button className="text-button" type="button" disabled={!!operation} onClick={clearBaiduSettings}>{text.baiduClear}</button>
-                </div>
-              </form>
-            </details>
-            <div className="feedback">
-              <div role="alert" aria-atomic="true">
-                {baiduConfig.error && <p className="message error">{formatMessage(locale, baiduConfig.error)}</p>}
-              </div>
-              <div role="status" aria-atomic="true">
-                {settingsNotice && <p className="message success">{formatMessage(locale, settingsNotice)}</p>}
-              </div>
-            </div>
             <form className="lookup-form" onSubmit={(event) => {
               event.preventDefault();
               void lookup(input).catch(() => {});
@@ -691,7 +549,7 @@ export default function Home() {
               <p className="draft-tip">
                 {draft.source === '手动填写'
                   ? text.manualTip
-                  : hasMachineTranslationSource(draft.source)
+                  : hasMyMemorySource(draft.source)
                     ? text.machineTip
                     : text.dictionaryTip}
               </p>

@@ -37,3 +37,23 @@ export function writeDictionaryProvider(
     return false;
   }
 }
+
+export function removeLegacyTranslationPreferences(
+  namespace: string,
+  getStorage: () => Pick<Storage, 'removeItem'> | undefined,
+): void {
+  let storage: Pick<Storage, 'removeItem'> | undefined;
+  try {
+    storage = getStorage();
+  } catch {
+    return;
+  }
+  if (!storage) return;
+  for (const key of ['baiduCredentials', 'translationProvider']) {
+    try {
+      storage.removeItem(`${namespace}:${key}`);
+    } catch {
+      // Attempt the remaining key even when one removal is blocked.
+    }
+  }
+}

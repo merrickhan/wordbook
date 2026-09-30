@@ -14,102 +14,55 @@ license fields. When returned content matches the original query, Wordbook const
 and validates a safe HTTPS English Wiktionary article URL from that query and retains
 it with the documented license. The article URL is not supplied by this API.
 
-Wordbook selects an English sense, its example and available Chinese translations;
+Wordbook selects an English sense, its example, and available Chinese translations;
 text is trimmed and may be shortened. Confirmed FreeDictionaryAPI.com IPA accents are
 labeled US / UK; segments that do not fit the 2,000-character total are omitted whole
 with a warning, never partly truncated. EnglishDictionaryAPI.com's single IPA has no
 accent metadata; Wordbook does not infer accents from audio URLs or load dictionary
 recordings. Users may edit excerpts before saving. Each adopted dictionary entry retains
-its provider, original Wiktionary article URL, license and modification notice in the
-existing `source` field, including in JSON backups. Editing the word or switching
-providers does not rewrite that source.
-The application displays links to the provider, original article and license.
-Redistributed dictionary content must retain the applicable attribution, license and
-modification notices; adaptations must meet the license's ShareAlike requirements.
-This data license is separate from the software dependency licenses below.
+its service name, original Wiktionary article URL, license, and modification notice in
+the existing `source` field, including in version 1 JSON backups. Editing the word,
+switching dictionaries, or changing interface language does not rewrite that source.
+The application displays links to the service, original article, and license. Draft
+attribution remains directly visible; saved entries expose full attribution through
+**Details & source**. Collapsing the details does not remove attribution from the entry
+or its backup.
 
-For network lookups, only the selected dictionary and the independently selected
-Chinese-completion service, MyMemory (the default) or Baidu, receive the query. They
-are requested in parallel; Baidu is not requested without saved credentials. Chinese
-from the selected dictionary sense takes priority, with machine translation filling
-missing Chinese only. There are no automatic retries or fallbacks to an unselected
-dictionary or translation service. The exact source label `MyMemory（机器翻译）` or
-`Baidu（机器翻译）` is recorded only when that translation is adopted. Historical entries
-are not relabeled when either selection changes.
+Redistributed dictionary content must retain applicable attribution, license information,
+and modification notices; adaptations must meet the license's ShareAlike requirements.
+This data license is separate from the software dependency licenses below and does not
+cover MyMemory translations.
 
-# Machine translation: MyMemory / Baidu
+# Chinese completion: MyMemory
 
-Machine translations are separate from the dictionary excerpts described above;
-Wordbook does not apply Wiktionary's CC BY-SA 4.0 license to MyMemory or Baidu output.
-Baidu provides Chinese translation only, not dictionary IPA, parts of speech,
-English definitions, examples, or per-entry dictionary license metadata. Baidu
-translations exceeding 2,000 characters are rejected whole, not truncated for use.
+[MyMemory](https://mymemory.translated.net/) is the fixed Chinese-completion service.
+For network lookups, only the selected dictionary and MyMemory receive the query,
+in parallel. Chinese from the selected dictionary sense takes priority; MyMemory fills
+missing Chinese only. It does not supply Wordbook's dictionary IPA, parts of speech,
+English definitions, examples, or per-entry dictionary license metadata. There are no
+automatic retries or requests to another dictionary or translation service. If one
+branch fails, usable content from the other is retained for an editable draft.
 
-Baidu use is governed by the service's current terms and account conditions. Consult
-its official [product documentation](https://fanyi-api.baidu.com/product/113) and
-[API documentation](https://fanyi-api.baidu.com/doc/23) for current requirements,
-pricing and quotas; this project does not promise a fixed price or allowance.
-The official guidance warns against leaking credentials or entering them into
-third-party software. Wordbook is a third-party frontend, not an official Baidu client;
-enter an APPID and key only in a deployment you trust and only if you accept this
-boundary. Multiple APPIDs used from the same IP on the same day may trigger error
-`58003`. Requests may incur charges even when the translation is not adopted or the
-local lookup is cancelled. Cancellation cannot retract an already accepted request
-or guarantee that it is unbilled.
+The exact raw source label `MyMemory（机器翻译）` is recorded only when its translation
+is adopted. Wordbook preserves recorded source strings in saved entries and JSON
+backups rather than relabeling them when a preference changes. Unknown historical
+source values remain opaque text. MyMemory output is separate from dictionary excerpts;
+Wordbook does not grant a CC BY-SA 4.0 license to it merely by displaying or backing it up.
+Consult the service's current terms, [API documentation](https://mymemory.translated.net/doc/spec.php),
+and [usage limits](https://mymemory.translated.net/doc/usagelimits.php) before using the
+service or reusing its output. This project does not promise a fixed quota, continued
+availability, or unrestricted reuse rights.
 
-Users supply their own APPID and key in the frontend. The selected translator and
-credentials are stored in deployment-namespaced `localStorage`, outside entries,
-IndexedDB, JSON backups and application tool output. Credentials are plaintext;
-a password field masks display, not storage. Same-origin pages and scripts,
-browser extensions with appropriate access, and other users of the browser profile
-may access them. Deployment-directory namespacing is not a security boundary.
-Saving requires both fields to pass local validation and persistence before the
-new configuration becomes active; it makes no request and does not verify the
-account with Baidu. The password input is cleared after a successful save.
+Both fetches use `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, but the
+services still receive the query. MyMemory is requested even when dictionary Chinese
+ultimately takes priority. Each request has its own 30-second timeout. Cancellation
+stops local waiting and acceptance of results; it cannot retract a request already
+received by an upstream service. Mock tests and browser emulation are not evidence of
+live-service availability or real iPhone Safari compatibility.
 
-The fixed HTTPS endpoint is `https://fanyi-api.baidu.com/api/trans/vip/translate`.
-Wordbook computes Baidu's required MD5 signature locally with `@noble/hashes` and
-loads JSONP only inside a temporary iframe with `sandbox="allow-scripts"`, without
-`allow-same-origin`. The signed URL contains the query (`q`), APPID (`appid`), `salt`
-and `sign`, but not the raw key; it can appear in network tools or service logs.
-Unlike dictionary and MyMemory fetches using `credentials: 'omit'`, JSONP may send
-Baidu cookies permitted by browser policy. The sandbox prevents the remote script
-from directly reading the parent DOM and local storage, but does not authenticate
-upstream content or impose a CPU quota. MD5 is required by the API protocol and is
-not used to encrypt stored credentials.
-
-The live capability probe sent only a callback parameter, with no query or
-credentials, and received the wrapped authorization error `52003` in a sandboxed
-Chromium iframe. This was not a successful authenticated translation and did not
-verify iPhone Safari support. Mock tests and checklists are not evidence of live
-account, quota or device compatibility.
-
-# @noble/hashes 2.4.0
-
-Used for local MD5 signing required by Baidu's translation protocol. The following
-notice is reproduced from the installed package's `LICENSE`.
-
-The MIT License (MIT)
-
-Copyright (c) 2022 Paul Miller (https://paulmillr.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the “Software”), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+For usage and data boundaries, see [README-ZH.md](README-ZH.md); implementation and
+validation guidance is in [MAINTENANCE-ZH.md](MAINTENANCE-ZH.md). Vite emits this notice
+file into the build output as `THIRD-PARTY-NOTICES.md`.
 
 # react
 

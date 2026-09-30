@@ -1,4 +1,4 @@
-// 业务层只保存消息标识和参数；默认中文也用于 Error 的诊断信息。
+// Business logic keeps message codes and parameters; default Chinese also supplies Error diagnostics.
 export const defaultMessages = {
   operationFailed: '操作失败，请重试。',
   invalidEntry: '条目内容无效。',
@@ -40,23 +40,6 @@ export const defaultMessages = {
   missingExample: '词典未提供此释义的例句，可补充你遇到的原句。',
   missingPhonetic: '未取得音标。',
   phoneticOmitted: '部分音标过长，已完整省略；可核对来源后手动补充。',
-  baiduNotConfigured: '尚未配置百度翻译，请展开百度设置，保存 APPID 和密钥。',
-  baiduInvalidCredentials: 'APPID 须为 1–64 位数字，密钥须为 1–256 个字符且不含空白或控制字符。请完整填写两项。',
-  baiduAuthFailed: '百度鉴权失败，请检查 APPID、密钥和通用文本翻译服务是否已开通。',
-  baiduRateLimited: '百度请求过于频繁，请稍后手动重试。',
-  baiduQuota: '百度账户余额或额度不足，请到百度翻译开放平台检查。',
-  baiduIpBlocked: '百度限制了当前 IP，请检查 IP 白名单及同 IP 多 APPID 限制。',
-  baiduUnavailable: '百度翻译暂时不可用，请检查网络、浏览器限制或服务状态。未切换其他翻译服务。',
-  baiduInvalidResponse: '百度未返回可用的中文译文，可手动补充。',
-  baiduTimedOut: '百度翻译等待超过 30 秒，可稍后手动重试。',
-  baiduSettingsReadFailed: '无法读取本地百度配置，本页暂不使用密钥。请检查浏览器存储权限。',
-  baiduSettingsInvalid: '本地百度配置格式无效，请重新填写并保存，或清除配置。',
-  baiduSettingsSaved: '已保存到当前浏览器。尚未验证百度接口；请查词后检查结果。',
-  baiduSettingsSaveFailed: '配置未能保存，仍使用此前生效的配置。请检查浏览器存储权限或空间。',
-  baiduSettingsCleared: '已清除当前部署的百度配置。',
-  baiduSettingsClearFailed: '本页已停止使用密钥，但未能清除本地存储。刷新后旧配置可能恢复，请检查浏览器存储设置。',
-  baiduSettingsUpdated: '百度配置已在其他标签页更改；当前查询已取消，未保存的设置输入保持不变。',
-  translationPreferenceNotSaved: '中文补全来源仅在本页生效，未能记住此选择。',
   deleted: ({ word }: { word: string }) => `已从词本删除“${word}”。`,
   duplicateWord: ({ word }: { word: string }) => `“${word}” 已在词本中，原词条已保留。`,
   imported: ({ imported, skipped }: { imported: number; skipped: number }) =>

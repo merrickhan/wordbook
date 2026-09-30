@@ -5,7 +5,7 @@ data/
 *.sqlite*
 .wordbook-test-*/
 
-# 构建产物、私人备份和本地验证输出
+# Build artifacts, private backups, and local validation output
 dist/
 wordbook-backup-*.json
 .wordbook-test/
