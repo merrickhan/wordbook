@@ -1,22 +1,68 @@
-# Dictionary content: FreeDictionaryAPI.com / Wiktionary
+# Dictionary content: FreeDictionaryAPI.com / EnglishDictionaryAPI.com / Wiktionary
 
-Dictionary excerpts are provided by [FreeDictionaryAPI.com](https://freedictionaryapi.com/)
-and originate from [Wiktionary contributors](https://en.wiktionary.org/) under
+Dictionary excerpts are provided by the selected service,
+[FreeDictionaryAPI.com](https://freedictionaryapi.com/) (the default) or
+[EnglishDictionaryAPI.com](https://englishdictionaryapi.com/), and originate from
+[Wiktionary contributors](https://en.wiktionary.org/) under
 [Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/).
 The [legal code](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en) governs use of this content.
 
-Wordbook selects an English sense, its example and available Chinese translations;
-text is trimmed and may be shortened. Users may edit these excerpts before saving.
-Each adopted dictionary entry retains its original Wiktionary article URL and license
-in the existing `source` field, including in JSON backups. The application displays
-links to the provider, original article and license. Redistributed dictionary content
-must retain the applicable attribution, license and modification notices; adaptations
-must meet the license's ShareAlike requirements. This data license is separate from
-the software dependency licenses below.
+FreeDictionaryAPI.com supplies article and license metadata, which Wordbook validates.
+EnglishDictionaryAPI.com's official site documents English Wiktionary content under
+CC BY-SA 4.0 and a 2026-06-01 data dump; its response model has no per-entry source or
+license fields. When returned content matches the original query, Wordbook constructs
+and validates a safe HTTPS English Wiktionary article URL from that query and retains
+it with the documented license. The article URL is not supplied by this API.
 
-MyMemory is queried in parallel for optional Chinese machine translation. Its name is
-added to an entry's source only when its translation is used. Historical entries are
-not relabeled as data from the new provider.
+Wordbook selects an English sense, its example, and available Chinese translations;
+text is trimmed and may be shortened. Confirmed FreeDictionaryAPI.com IPA accents are
+labeled US / UK; segments that do not fit the 2,000-character total are omitted whole
+with a warning, never partly truncated. EnglishDictionaryAPI.com's single IPA has no
+accent metadata; Wordbook does not infer accents from audio URLs or load dictionary
+recordings. Users may edit excerpts before saving. Each adopted dictionary entry retains
+its service name, original Wiktionary article URL, license, and modification notice in
+the existing `source` field, including in version 1 JSON backups. Editing the word,
+switching dictionaries, or changing interface language does not rewrite that source.
+The application displays links to the service, original article, and license. Draft
+attribution remains directly visible; saved entries expose full attribution through
+**Details & source**. Collapsing the details does not remove attribution from the entry
+or its backup.
+
+Redistributed dictionary content must retain applicable attribution, license information,
+and modification notices; adaptations must meet the license's ShareAlike requirements.
+This data license is separate from the software dependency licenses below and does not
+cover MyMemory translations.
+
+# Chinese completion: MyMemory
+
+[MyMemory](https://mymemory.translated.net/) is the fixed Chinese-completion service.
+For network lookups, only the selected dictionary and MyMemory receive the query,
+in parallel. Chinese from the selected dictionary sense takes priority; MyMemory fills
+missing Chinese only. It does not supply Wordbook's dictionary IPA, parts of speech,
+English definitions, examples, or per-entry dictionary license metadata. There are no
+automatic retries or requests to another dictionary or translation service. If one
+branch fails, usable content from the other is retained for an editable draft.
+
+The exact raw source label `MyMemory（机器翻译）` is recorded only when its translation
+is adopted. Wordbook preserves recorded source strings in saved entries and JSON
+backups rather than relabeling them when a preference changes. Unknown historical
+source values remain opaque text. MyMemory output is separate from dictionary excerpts;
+Wordbook does not grant a CC BY-SA 4.0 license to it merely by displaying or backing it up.
+Consult the service's current terms, [API documentation](https://mymemory.translated.net/doc/spec.php),
+and [usage limits](https://mymemory.translated.net/doc/usagelimits.php) before using the
+service or reusing its output. This project does not promise a fixed quota, continued
+availability, or unrestricted reuse rights.
+
+Both fetches use `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, but the
+services still receive the query. MyMemory is requested even when dictionary Chinese
+ultimately takes priority. Each request has its own 30-second timeout. Cancellation
+stops local waiting and acceptance of results; it cannot retract a request already
+received by an upstream service. Mock tests and browser emulation are not evidence of
+live-service availability or real iPhone Safari compatibility.
+
+For usage and data boundaries, see [README-ZH.md](README-ZH.md); implementation and
+validation guidance is in [MAINTENANCE-ZH.md](MAINTENANCE-ZH.md). Vite emits this notice
+file into the build output as `THIRD-PARTY-NOTICES.md`.
 
 # react
 

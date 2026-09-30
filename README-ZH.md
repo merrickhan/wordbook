@@ -1,16 +1,29 @@
-# Wordbook：纯前端生词本
+# Wordbook: a browser-based vocabulary notebook
 
-基于 React 19、TypeScript 5.9 和 Vite 8 的个人生词本，可在本机预览或托管到 GitHub Pages。**没有应用后端、登录或自动同步；词条保存在当前浏览器的 IndexedDB 中，不保存在 GitHub。** Node.js 只用于开发和构建，访问已发布网页不需要安装 Node.js。
+Wordbook is a personal vocabulary notebook built with React 19, TypeScript 5.9, and Vite 8. Run it locally or host it on GitHub Pages. **There is no application backend, account system, or automatic synchronization. Entries are stored in the current browser's IndexedDB, not on GitHub.** Node.js is needed only for development and builds, not to visit the published site.
 
-支持查询、编辑草稿、保存、朗读，以及 JSON 备份和合并导入。内置 `investigation`（调查）示例。自动查询依赖第三方接口，查询失败时仍可手动填写。
+Look up words, edit drafts, save or delete entries, listen to pronunciation, and export or merge JSON backups. The mobile-first **responsive website** shows lookup, draft, and word list in sequence on phones. On wide desktop screens, lookup and editing appear on the left and saved words on the right. Both layouts use the same features; this is not a native iOS app or a PWA. The interface uses cool white and dark green, with a bracket and subtle highlight connecting English words to their Chinese translations. Saved entries keep their date, full attribution, and license in **Details & source**; draft attribution remains directly visible. Automatic lookup depends on third-party services, but manual entry remains available when requests fail.
 
-顶栏 **中文 | EN** 可即时切换界面语言，默认中文，不跟随浏览器语言。选择保存在当前浏览器的 `localStorage` 中，并按部署目录区分；刷新后恢复，存储不可用时仍可在当前页面切换。切换不会清空草稿或中断操作，只改变界面提示、日期和已知来源说明的展示；单词、中文释义等学习内容及备份中的原始来源不变，朗读仍为英语。语言偏好不包含在词条备份中，原生文件选择器等系统界面的语言由设备决定。
+The header always shows **中文 | EN** directly, rather than inside a menu, and scrolls with the page. The interface defaults to Chinese rather than following the browser's language. Language changes take effect immediately and are remembered in deployment-scoped `localStorage` when available; otherwise, they still work for the current page. Switching languages preserves drafts and ongoing operations. Only interface feedback, dates, and recognized source descriptions change their presentation: learning content, Chinese translations, and raw source strings in backups remain unchanged. Speech remains English. Language preferences are not part of entry backups, and system interfaces such as file pickers follow the device's language.
 
-## 一、本机使用
+## Using the interface
 
-推荐安装 [Node.js 24.x](https://nodejs.org/)。项目支持 Node.js 22.12 及以上的 22.x，或 24.x；使用固定版本 pnpm 11.25.0。
+- The native dictionary selector beside the lookup heading uses the short labels **FreeDict** and **EnglishDict** for **FreeDictionaryAPI.com (default)** and **EnglishDictionaryAPI.com**. It wraps naturally when space is limited. The selection is remembered for the current browser and deployment directory when storage is available. The visible hint explains: “Switching cancels active lookups; completed drafts stay.” EnglishDict also shows “Accents are not labeled.” Switching affects the next lookup without automatically starting one, changing the input, altering a completed draft or its source, or modifying saved entries. Dictionary switching is unavailable during save, delete, import, and export operations.
+- **MyMemory is the fixed service for Chinese completion.** There is no translation-service selector or configuration form. The selected dictionary supplies phonetics, parts of speech, English definitions, and examples. Chinese from the same dictionary sense takes priority; MyMemory fills missing Chinese only. The dictionary and MyMemory requests run in parallel, so MyMemory receives the query even when its translation is not adopted. There are no automatic retries or service changes.
+- Enter an English word and choose **Look up** or press Enter. **Fill in manually** is a separate action on its own line. The draft initially shows the word and Chinese translation text area; review and edit the draft before saving.
+- When a draft has phonetics, a preview remains visible outside the collapsed section. If complete US/UK labels are not recognized, the interface adds “Accent not labeled.” The single phonetic input, part of speech, English definition, and example are in the native **More details (optional)** disclosure. Collapsing it does not clear fields or exclude them from saving. Full attribution, licenses, review guidance, and warnings remain directly visible.
+- **My words** shows each complete word, available phonetics and part of speech, and the full Chinese translation. Every entry has a **Details & source** disclosure containing its creation date, full source and license when present, and any English definition or example. These details are collapsed by default, not removed. Manual and older entries without a definition or example still have this disclosure, with no empty-field placeholders.
+- The trash button beside each saved word's speech button lets you **delete that entry after confirmation**. Cancelling leaves the notebook unchanged. Deletion cannot be directly undone, but you can add the word again or restore it by importing a backup made before deletion. Unsaved drafts are unaffected. The confirmation message follows the interface language; the browser controls the language of its confirmation buttons.
+- Expand **Backup** beside the word-list heading for import and export. The reminder that entries are local to this browser, do not sync automatically, and need regular backups stays visible outside the disclosure.
+- After a successful read of an empty notebook, **Try investigation** prepares an editable built-in draft with the Chinese translation `调查`. It makes no network request and does not save automatically.
 
-在项目目录的终端执行：
+The interface has one compact layout, not a separate density mode. With the default 16px root font, body text is 13px on phones and 14px at desktop widths of at least 1024px. Text grows with user font settings, and long words, full dual phonetics, and multiline content wrap without ellipses. Inputs and text areas use at least 16px text. Main controls, buttons, and disclosure headings are at least 44px high; language, speech, delete, and close buttons are at least 44×44px. The native dictionary selector sizes to its longest option and arrow, with a light, transparent appearance. It normally uses at least 44px height and 16px text. Only at widths of at least 640px with hover support, a fine primary pointer, and **no coarse pointer** does it use a 32px minimum height and relative body text (`var(--text-body)`): 13px at 640–1023px and 14px at widths of at least 1024px, with the default 16px root font. Touch, hybrid-input, and narrow-screen environments retain the larger targets. Minimum heights, rather than fixed heights, allow the selector to grow when text is enlarged.
+
+## 1. Run locally
+
+[Node.js 24.x](https://nodejs.org/) is recommended. Supported versions are Node.js 22.x from 22.12 onward, or 24.x. The project pins pnpm 11.25.0.
+
+Run these commands in the project directory:
 
 ```sh
 npm install -g pnpm@11.25.0
@@ -18,9 +31,9 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-打开终端显示的地址，通常为 **http://127.0.0.1:5173/**。不要直接双击 HTML 文件。按 Ctrl+C 停止开发服务；正常浏览模式下，关闭服务不会主动删除已保存的词条。
+Open the address printed in the terminal, usually **http://127.0.0.1:5173/**. Do not open the HTML file by double-clicking it. Press Ctrl+C to stop the development server. In normal browsing mode, stopping the server does not itself delete saved entries.
 
-检查并预览构建结果：
+Check and preview a production build:
 
 ```sh
 pnpm check
@@ -29,42 +42,52 @@ pnpm build
 pnpm preview
 ```
 
-预览地址通常为 `http://127.0.0.1:4173/`。源码更新后须重新构建，预览不会自动使用最新源码。**开发与预览的端口不同，数据也不同**；`localhost` 和 `127.0.0.1` 同样不是同一来源。需要转移时先导出 JSON，再在目标地址导入。
+The preview address is usually `http://127.0.0.1:4173/`. Rebuild after source changes; preview serves the existing build. **Development and preview use different ports and therefore different browser storage.** `localhost` and `127.0.0.1` are also different origins. To transfer entries, export JSON from the old address and import it at the new one.
 
-## 二、发布到 GitHub Pages
+## 2. Publish to GitHub Pages
 
-项目提供 `.github/workflows/deploy.yml`，通过 GitHub Actions 构建和部署：
+The project includes `.github/workflows/deploy.yml` to build and deploy through GitHub Actions:
 
-1. 在 GitHub 创建仓库，将项目源码和配置上传到仓库根目录，保留目录结构。必须包含 `package.json`、`pnpm-lock.yaml` 和 `.github/workflows/deploy.yml` 等构建文件。
-   - 网页方式：使用 **Add file → Upload files**。如果隐藏目录未被上传，可用 **Create new file** 创建 `.github/workflows/deploy.yml`，粘贴本地同名文件的内容。
-   - Git 方式：在终端将项目提交到目标仓库并推送。
-   - 不要上传 `.env`、历史 `data/`、SQLite 文件、私人 JSON 备份、`node_modules/`、`dist/`，或 `.wordbook-test/`、`.playwright-mcp/` 等本地验证输出。网页上传不会自动遵守本地 `.gitignore`，请自行检查。
-2. 打开仓库 **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**。
-3. 工作流默认在推送到 `main` 时触发，也可在 **Actions → Deploy Wordbook to GitHub Pages → Run workflow** 手动运行。如果默认分支不是 `main`，请修改工作流中的 `on.push.branches`；手动运行入口要求工作流已存在于默认分支。
-4. 等待依赖安装、类型检查、测试、构建及部署全部成功，再从 Pages 设置或部署环境打开实际生成的网址。若上传时尚未启用 Pages，可在启用后重新运行工作流。
+1. Create a GitHub repository and upload the project source and configuration to its root, preserving the directory structure. Include build files such as `package.json`, `pnpm-lock.yaml`, and `.github/workflows/deploy.yml`.
+   - In the web interface, use **Add file → Upload files**. If the hidden workflow directory is omitted, use **Create new file** to create `.github/workflows/deploy.yml` and paste the local file's contents.
+   - With Git, commit the project to the intended repository and push it.
+   - Do not upload `.env`, historical `data/` directories, SQLite files, private JSON backups, `node_modules/`, `dist/`, or local verification output such as `.wordbook-test/` and `.playwright-mcp/`. Web uploads do not automatically honor the local `.gitignore`; inspect the selected files yourself.
+2. Once per repository, under **Settings → Pages → Build and deployment → Source**, select **GitHub Actions**. This repository setting is separate from the workflow file. The workflow's ordinary `GITHUB_TOKEN` cannot enable a missing Pages site; no personal access token secret is needed when Pages is enabled through settings.
+3. Keep `develop` as the integration/default branch and **`main` as the release branch**. PRs targeting either branch run dependency installation, type checking, tests, and a production build, without uploading a Pages artifact or deploying. Merge feature PRs into `develop`, then merge `develop` into `main` when ready to publish. Merging into `develop` does not deploy; a merge or other push to `main` automatically builds and deploys after validation succeeds. Do not change `on.push.branches` merely because the default branch is `develop`.
+4. For an optional manual deployment, select **Actions → Deploy Wordbook to GitHub Pages → Run workflow** and explicitly choose **`main`**. Manual dispatch requires the workflow to exist on the default branch. A manual run from any other branch or tag validates and builds only; it does not publish.
+5. Wait for the main-branch build and deployment jobs to succeed, then open the actual URL shown in Pages settings or the deployment environment. If Pages was not enabled when the main-branch workflow ran, enable it, then explicitly run the workflow on `main` again. Check that any `github-pages` environment restrictions allow `main`; do not remove existing protections blindly.
 
-CI 使用 Node.js 24 和 pnpm 11.25.0，按锁文件安装依赖，只把生成的 **`dist/`** 上传为 Pages 构建产物，不上传整个项目根目录。`dist/` 不应提交到仓库。Vite 使用相对资源路径 `base: './'`，无需根据仓库名配置路径；应用没有前端路由。上线结果以 Actions 和实际网站访问为准，本地构建成功不等于已发布。
+CI uses Node.js 24 and pnpm 11.25.0 and installs from the frozen lockfile. Only eligible main-branch runs upload the generated **`dist/`** directory as the Pages artifact—not the project root. Do not commit `dist/`. Vite uses relative asset paths with `base: './'`, so the repository name does not need to be configured as a build path. The app has no client-side routing. Confirm publication in Actions and by visiting the site; enabling Pages, passing PR checks, or a successful local build is not proof of deployment.
 
-## 三、JSON 备份与迁移
+## 3. JSON backups and transfers
 
-- 在页面导出 JSON，将下载文件另存到可靠位置，并保留多个日期版本。备份含私人词条，**没有加密**，不要放进公开仓库。
-- 在目标浏览器或网址选择备份文件导入。导入是**合并**：保留现有词条，跳过重复词，不覆盖其内容；新词保留原 `created` 创建时间。
-- 备份格式为 `{ format: 'wordbook', version: 1, exportedAt, entries }`。词条不包含数据库 ID；导入时生成新 ID。不要将任意 JSON 或旧数据库文件当作备份导入。
-- 单份备份最多 **10 MiB（10,485,760 字节）和 10,000 条**。导入前会完整校验，通过后用事务提交；文件无效或事务失败不会破坏原数据。导出同样校验字段、数量和大小，不会静默截断。
-- 更换设备、浏览器、域名、协议、端口或部署目录前，先在旧地址导出，再到新地址导入。不同设备访问同一个 Pages 网址，也不会共享词条。
+- Expand **Backup** beside **My words**, then choose **Export backup** to download JSON. Check that the download is saved somewhere reliable and retain multiple dated copies. Backups contain private entries and **are not encrypted**; do not put them in a public repository.
+- In the target browser or at the target address, expand **Backup**, choose **Import backup**, and select a Wordbook JSON file in the system file picker. Import **merges** entries: existing words stay unchanged, duplicates are skipped, and newly imported words retain their original `created` timestamps.
+- A backup exported after deletion excludes deleted entries. Earlier backup files are unchanged and can restore their entries through import. Deletion affects only the current browser's notebook, not other devices or existing backup files.
+- The format remains `{ format: 'wordbook', version: 1, exportedAt, entries }`, containing the seven entry fields and `created`. Phonetics remain a single string: labeled dual phonetics and older IPA text are preserved as written. Database IDs are not exported; import assigns new ones. Dictionary and language preferences are not included. Changing the dictionary does not change the database name or IndexedDB version 1. Do not import arbitrary JSON or old database files as backups.
+- Each backup is limited to **10 MiB (10,485,760 bytes) and 10,000 entries**. The entire file is validated before a transaction commits the import. Invalid files and failed transactions leave existing data intact. Export applies the same field, count, and size checks and never silently truncates the backup.
+- Before changing device, browser, domain, protocol, port, or deployment directory, export at the old address and import at the new one. Two devices visiting the same Pages URL do not share entries.
 
-原 SQLite 数据**不会自动迁移**。请保留历史数据及已有备份；本版不提供 SQLite 导入器，需要另行转换成受支持的 JSON 格式或手动录入。
+Historical SQLite data is **not migrated automatically**. Keep those databases and existing backups. There is no SQLite importer; convert data separately into the supported JSON format or enter it manually.
 
-## 四、数据与隐私边界
+## 4. Data, privacy, and service boundaries
 
-- 网页代码和静态资源对访问者公开，不要在前端源码或构建变量中放密码、令牌或密钥。发布到 Pages 不会把 IndexedDB 中的词条一起上传。
-- IndexedDB 受浏览器同源规则约束，并按规范化部署目录使用 `wordbook:` 前缀的数据库名，减少同源不同目录的误混用。**库名不同不等于安全隔离**：同源页面脚本仍可能访问这些数据库。共享浏览器配置文件的人也可能看到词条。
-- 清除网站数据、浏览器空间回收、隐私模式退出或浏览器配置文件损坏，都可能导致本地数据丢失。浏览器保存不等于备份，请定期导出。
-- 查词会从浏览器并行请求 FreeDictionaryAPI.com（`freedictionaryapi.com`）和 MyMemory（`api.mymemory.translated.net`），两家都会收到查询词语。每路请求最多等待 30 秒；优先使用同一词义的词典中文译词，缺失时采用 MyMemory 机器翻译。上游失败时可手动填写，不影响已保存词条。
-- FreeDictionaryAPI.com 无需密钥，受网络、跨域策略、服务额度和词条覆盖限制。数据来自 Wiktionary，采用 CC BY-SA 4.0；页面展示服务署名、原始词条和许可链接，来源信息随词条及 JSON 备份保留。编辑单词不会改写原始来源链接。再分发词典内容时须保留署名、许可及修改说明，并遵守相同方式共享等许可要求。
-- 朗读使用系统／浏览器语音功能，所选语音可能联网处理文本，是否可用和是否离线取决于设备。
-- 本版不是 PWA，也不保证关闭网页后能离线重新打开；没有账号、云端恢复或自动同步服务。
+- Website code and static assets are public to visitors. Never put passwords, tokens, or secrets in frontend source or build variables. Publishing to Pages does not upload entries from IndexedDB.
+- IndexedDB follows the browser's same-origin rules. Database names use the `wordbook:` prefix and a normalized deployment directory to reduce accidental mixing between directories on the same origin. **Different database names are not a security boundary**: same-origin scripts may still access those databases. Other users of the browser profile may also see entries.
+- Clearing site data, browser storage eviction, leaving private-browsing mode, or profile corruption can cause local data loss. Browser storage is not a backup; export regularly.
+- **Retired translation settings:** Visit the updated app in the same browser profile at each specific origin and deployment directory where it was used to attempt cleanup. Each mount/reload silently tries to remove only `localStorage` keys `${databaseName(location.href)}:baiduCredentials` and `${databaseName(location.href)}:translationProvider`, without reading or logging old values. Removal is best-effort; failures are retried on later mounts/reloads, and publishing the update alone does not establish successful cleanup. Saved words, backups, language/dictionary preferences, other namespaces, unnamespaced lookalikes, and `sessionStorage` are untouched. The retired service is not restored. **Do not clear all site data for this cleanup.**
+- Network lookups contact **only the selected dictionary and MyMemory**, in parallel. FreeDictionaryAPI.com (`freedictionaryapi.com`) or EnglishDictionaryAPI.com (`englishdictionaryapi.com`), plus MyMemory (`api.mymemory.translated.net`), receive the query word. The unselected dictionary does not. Both requests use `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`; this does not make queries anonymous to the services. Each request has its own 30-second timeout, with no automatic retry or switch to another service. Cancellation stops local waiting and acceptance of results; it cannot retract a request already received upstream.
+- Chinese from the selected dictionary sense takes priority; MyMemory fills missing Chinese only. A failed translation request does not discard successful dictionary content, and a failed dictionary request can still leave a usable Chinese translation. Missing fields remain editable, and saved entries are unaffected. The raw source label `MyMemory（机器翻译）` is recorded only when MyMemory's translation fills the Chinese field. Machine translation is not covered by the dictionary's Wiktionary license, and changing the dictionary or interface language does not relabel saved sources.
+- Both dictionaries and the MyMemory lookup used here work without user-supplied API keys. Network conditions, cross-origin policies, usage limits, and content coverage can prevent successful lookup; continued availability is not guaranteed. See MyMemory's [API documentation](https://mymemory.translated.net/doc/spec.php) and [usage limits](https://mymemory.translated.net/doc/usagelimits.php) for its current requirements. The project does not promise a fixed quota or unrestricted reuse of translation output.
+- Both dictionaries provide Wiktionary content under CC BY-SA 4.0. Wordbook displays links to the service, original article, and license, and retains attribution with entries and JSON backups. EnglishDictionaryAPI.com does not return per-entry source or license fields: Wordbook safely constructs an article link from the matching original query and uses the license documented by the service. Editing the word or switching dictionaries does not rewrite recorded attribution. Redistribution must preserve attribution, license information, and modification notices, and comply with ShareAlike and other applicable license requirements.
+- FreeDictionaryAPI.com phonetics come only from the selected English entry. Exact tags `US` or `General American` identify US pronunciation; `UK` or `Received Pronunciation` identify UK pronunciation, after trimming and case-insensitive comparison. When both are confirmed, the display is such as `US /təˈmeɪ.toʊ/ · UK /təˈmɑː.təʊ/`, with US first. If only one is confirmed, only that accent is shown; accents are not assembled across entries. If neither is confirmed, the first valid IPA is retained as written. When the 2,000-character limit would be exceeded, complete segments that fit are retained in US-then-UK order, and omitted segments produce a warning; IPA and labels are never cut mid-segment.
+- EnglishDictionaryAPI.com supplies a single word-level IPA without accent metadata. The interface displays “Accent not labeled”; it does not guess from audio URLs or IPA spelling. Older, manual, and imported phonetics are not rewritten. Only complete explicit US/UK labels are recognized for presentation; other formats retain their text and receive the display-only hint. The editable phonetic value is still one string, so no backup-version change is needed.
+- Speech uses the browser or system speech facility, not dictionary recordings. Each click prefers an available `en-US` voice. Changing the interface language or dictionary does not change this preference. If voices have not loaded or no US voice is available, the app still requests `en-US`, but the actual accent depends on the device. Some voices may process text online; speech is not guaranteed to be available or offline.
+- Browser mocks and viewport or touch emulation cannot establish live-service availability or real iPhone Safari compatibility. Real-device keyboard behavior, safe areas, VoiceOver, file handling, and speech require separate manual verification. A checklist is not a record of completed validation.
+- This is not a PWA. Reopening the site offline is not guaranteed, and there is no account-based recovery, cloud restore, or automatic synchronization.
 
-## 五、维护
+## 5. Maintenance
 
-源码职责、实现约定和检查清单见 [MAINTENANCE-ZH.md](MAINTENANCE-ZH.md)。第三方内容与依赖许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)，构建时会将该声明加入 `dist/`。
+See [MAINTENANCE-ZH.md](MAINTENANCE-ZH.md) for file responsibilities, implementation contracts, and validation guidance. Code identifiers, comments, test titles, static developer-facing metadata, and documentation use English; the bilingual interface, Chinese learning content, persisted source literals, and intentional Unicode fixtures remain unchanged. `modelContext` tool titles and descriptions use English, while runtime feedback follows the interface language.
+
+Third-party content and dependency licenses are documented in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Vite includes that notice file in `dist/` during the build.

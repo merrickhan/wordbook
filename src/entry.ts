@@ -1,4 +1,4 @@
-// 词条类型、格式示例与统一校验；草稿和备份共用相同的字段规则。
+// Entry types, sample data, and shared validation; drafts and backups use the same field rules.
 import { MessageError } from './messages';
 
 export type Entry = {

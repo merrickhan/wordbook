@@ -4,7 +4,7 @@ import { createEntry, sample, validWord, validateCreated, validateDatedEntry, va
 
 const created = '2024-02-29T12:34:56.789Z';
 
-test('词条只保留七个业务字段，统一 trim 和单词大小写', () => {
+test('entries retain only seven business fields, trimming values and normalizing word case', () => {
   const input = {
     ...sample,
     word: '  Well-KNOWN  ',
@@ -32,7 +32,22 @@ test('词条只保留七个业务字段，统一 trim 和单词大小写', () =>
   assert.deepEqual(Object.keys(validated).sort(), Object.keys(sample).sort());
 });
 
-test('createEntry 返回可编辑、相互独立的合法草稿', () => {
+test('validation preserves dual-accent, single-accent and legacy IPA while excluding dictionary preferences', () => {
+  for (const phonetic of [
+    'US /təˈmeɪ.toʊ/ · UK /təˈmɑː.təʊ/',
+    'US /təˈmeɪ.toʊ/',
+    'UK /təˈmɑː.təʊ/',
+    sample.phonetic,
+  ]) {
+    const expected = { ...sample, phonetic };
+    const input = { ...expected, provider: 'english-dictionary', dictionaryProvider: 'free-dictionary' };
+    assert.equal(Object.keys(expected).length, 7);
+    assert.deepEqual(validateEntry(input), expected);
+    assert.deepEqual(validateDatedEntry({ ...input, created }), { ...expected, created });
+  }
+});
+
+test('createEntry returns valid, editable drafts that are independent of one another', () => {
   const entry = createEntry('  Apple  ');
   assert.deepEqual(entry, {
     word: 'apple', phonetic: '', translation: '', pos: '', definition: '', example: '', source: '手动填写',
@@ -43,7 +58,7 @@ test('createEntry 返回可编辑、相互独立的合法草稿', () => {
   assert.deepEqual(validateEntry(sample), sample);
 });
 
-test('单词字符和长度边界统一校验', () => {
+test('word character and length boundaries are validated consistently', () => {
   for (const word of ['apple', '  Apple  ', "don't", 'well-known', 'ice cream', 'a'.repeat(80)])
     assert.equal(validWord(word), true, word);
   for (const word of ['', '  ', 'a'.repeat(81), '123', 'apple1', '中文', 'café', 'a_b', 'a/b', 'a\nb', '-apple', "'apple", null, 5, {}]) {
@@ -52,7 +67,7 @@ test('单词字符和长度边界统一校验', () => {
   }
 });
 
-test('所有字段必填且必须为 string，正文长度不超过 2000', () => {
+test('all fields are required strings and content is limited to 2000 characters', () => {
   for (const value of [null, undefined, [], '', 1])
     assert.throws(() => validateEntry(value), /内容无效/);
   for (const key of Object.keys(sample)) {
@@ -70,7 +85,7 @@ test('所有字段必填且必须为 string，正文长度不超过 2000', () =>
   }
 });
 
-test('日期只接受能严格往返的 UTC ISO 字符串', () => {
+test('dates accept only UTC ISO strings that round-trip exactly', () => {
   for (const value of [created, '1970-01-01T00:00:00.000Z', '2026-09-28T08:00:00.000Z'])
     assert.equal(validateCreated(value), value);
   for (const value of [
@@ -82,7 +97,7 @@ test('日期只接受能严格往返的 UTC ISO 字符串', () => {
   ]) assert.throws(() => validateCreated(value), /创建时间无效/, String(value));
 });
 
-test('备份词条复用业务校验和日期校验，丢弃本地 ID 及未知字段', () => {
+test('backup entries reuse business and date validation while discarding local IDs and unknown fields', () => {
   assert.deepEqual(validateDatedEntry({ ...sample, word: ' APPLE ', created, id: 99, extra: true }), {
     ...sample, word: 'apple', created,
   });
