@@ -32,6 +32,21 @@ test('词条只保留七个业务字段，统一 trim 和单词大小写', () =>
   assert.deepEqual(Object.keys(validated).sort(), Object.keys(sample).sort());
 });
 
+test('双音标、单口音及旧 IPA 校验原样保留，词典偏好不进入七字段', () => {
+  for (const phonetic of [
+    'US /təˈmeɪ.toʊ/ · UK /təˈmɑː.təʊ/',
+    'US /təˈmeɪ.toʊ/',
+    'UK /təˈmɑː.təʊ/',
+    sample.phonetic,
+  ]) {
+    const expected = { ...sample, phonetic };
+    const input = { ...expected, provider: 'english-dictionary', dictionaryProvider: 'free-dictionary' };
+    assert.equal(Object.keys(expected).length, 7);
+    assert.deepEqual(validateEntry(input), expected);
+    assert.deepEqual(validateDatedEntry({ ...input, created }), { ...expected, created });
+  }
+});
+
 test('createEntry 返回可编辑、相互独立的合法草稿', () => {
   const entry = createEntry('  Apple  ');
   assert.deepEqual(entry, {

@@ -36,6 +36,32 @@ test('备份信封、所有业务字段及日期往返一致，按 ID 升序且�
   assert.deepEqual(values, original);
 });
 
+test('双音标、单口音及未标口音的七字段、日期和来源经 v1 导出导入不变', async t => {
+  const freeSource = 'FreeDictionaryAPI.com | Wiktionary: https://en.wiktionary.org/wiki/tomato | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑';
+  const englishSource = freeSource.replace('FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com');
+  const values = [
+    ['dual', 'US /təˈmeɪ.toʊ/ · UK /təˈmɑː.təʊ/', freeSource],
+    ['american', 'US /təˈmeɪ.toʊ/', freeSource],
+    ['british', 'UK /təˈmɑː.təʊ/', freeSource],
+    ['unmarked', '/təˈmɑːtəʊ/', englishSource],
+    ['legacy', sample.phonetic, sample.source],
+  ].map(([word, phonetic, source]) => ({ ...entry, word, phonetic, source }));
+  const originals = values.map((value, index) => ({
+    ...value, id: index + 1, provider: 'english-dictionary', dictionaryProvider: 'free-dictionary',
+  }));
+  const text = serializeBackup(originals, exportedAt);
+  assert.deepEqual(JSON.parse(text), envelope(values));
+  const parsed = parseBackup(text);
+  assert.deepEqual(parsed, values);
+  const store = createWordStore({ name: 'phonetic-backup', indexedDB: new IDBFactory(), now: () => new Date(created) });
+  t.after(() => store.close());
+  assert.deepEqual(await store.importEntries(parsed), { imported: 5, skipped: 0 });
+  await store.close();
+  const restored = await store.list();
+  assert.deepEqual(restored, values.map((value, index) => ({ ...value, id: index + 1 })).reverse());
+  assert.equal(serializeBackup(restored, exportedAt), text);
+});
+
 test('空库允许导出和导入，默认导出时间是合法 UTC ISO', () => {
   assert.deepEqual(parseBackup(serializeBackup([], exportedAt)), []);
   const before = Date.now();
@@ -63,6 +89,48 @@ test('导入重新分配 ID、保留创建时间，恢复后相对顺序不变',
   assert.deepEqual(restored.slice(0, 3).map(({ id: _id, ...value }) => value), [...parsed].reverse());
   assert.deepEqual(restored[3], seed);
   assert.deepEqual(await store.importEntries(parsed), { imported: 0, skipped: 3 });
+});
+
+test('删除后的 v1 备份排除词条，删除前备份以新 ID 恢复原字段并跳过保留项', async t => {
+  const store = createWordStore({ name: 'removed-backup', indexedDB: new IDBFactory(), now: () => new Date(exportedAt) });
+  t.after(() => store.close());
+  const values: DatedEntry[] = [
+    { ...createEntry('first'), translation: '合成首项', created: '2020-01-01T00:00:00.000Z' },
+    {
+      word: 'removed',
+      phonetic: 'US /rɪˈmuːvd/ · UK /rɪˈmuːvd/',
+      translation: '合成删除项',
+      pos: 'Adjective',
+      definition: 'A synthetic definition for backup restoration.',
+      example: 'This is a synthetic removed entry.',
+      source: 'Synthetic backup fixture',
+      created,
+    },
+    { ...createEntry('last'), definition: 'A synthetic surviving entry.', created: exportedAt },
+  ];
+  assert.deepEqual(await store.importEntries(values), { imported: 3, skipped: 0 });
+  const originals = await store.list();
+  const removed = originals[1];
+  const survivors = [originals[0], originals[2]];
+  const before = serializeBackup(originals, exportedAt);
+  assert.deepEqual(JSON.parse(before), envelope(values));
+
+  await store.remove(removed.id);
+  await store.close();
+  assert.deepEqual(await store.list(), survivors);
+  const after = serializeBackup(await store.list(), exportedAt);
+  assert.deepEqual(JSON.parse(after), envelope([values[0], values[2]]));
+  assert.deepEqual(parseBackup(after), [values[0], values[2]]);
+
+  assert.deepEqual(await store.importEntries(parseBackup(before)), { imported: 1, skipped: 2 });
+  await store.close();
+  const restored = await store.list();
+  assert.ok(restored[0].id > originals[0].id);
+  assert.deepEqual(restored[0], { ...removed, id: restored[0].id });
+  assert.deepEqual(restored.slice(1), survivors);
+  assert.deepEqual(await store.importEntries(parseBackup(before)), { imported: 0, skipped: 3 });
+  assert.deepEqual(await store.list(), restored);
+  assert.deepEqual(JSON.parse(serializeBackup(restored, exportedAt)), envelope([values[0], values[2], values[1]]));
 });
 
 test('解析采用字段白名单和规范化，合法重复项留给导入计数', () => {

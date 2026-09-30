@@ -1,6 +1,8 @@
 // 浏览器直接查询公开词典；失败时保留草稿，不伪造缺失的释义。
 import { createEntry, sample, validWord, type Entry } from './entry';
 import { MessageError, type Message } from './messages';
+import { DEFAULT_DICTIONARY_PROVIDER, dictionaryProviders, type DictionaryProvider } from './dictionary-providers';
+import { formatPhonetics } from './phonetics';
 
 type LookupResult = { entry: Entry; warnings: Message[] };
 type Fetcher = (url: string, options?: RequestInit) => Promise<Response>;
@@ -43,10 +45,90 @@ function collectSenses(value: unknown): Record<string, unknown>[] {
   return senses;
 }
 
+type DictionaryContent = {
+  fields: Omit<Entry, 'word' | 'source'>;
+  sourceUrl: string;
+  phoneticOmitted: boolean;
+};
+
+function matchesWord(value: unknown, word: string): boolean {
+  return validWord(value) && value.trim().toLowerCase() === word;
+}
+
+function partOfSpeech(value: unknown): string {
+  const pos = text(value);
+  return pos ? pos[0].toUpperCase() + pos.slice(1) : '';
+}
+
+function freeDictionaryContent(value: unknown, word: string): DictionaryContent | undefined {
+  const dictionary = record(value);
+  const source = record(dictionary.source);
+  const license = record(source.license);
+  const sourceUrl = wiktionaryUrl(source.url);
+  if (!matchesWord(dictionary.word, word) || !sourceUrl ||
+    license.name !== 'CC BY-SA 4.0' || license.url !== DICTIONARY_LICENSE_URL) return;
+
+  const meanings = array(dictionary.entries).map(record)
+    .filter((entry) => record(entry.language).code === 'en')
+    .map((entry) => ({ entry, senses: collectSenses(entry.senses) }));
+  const selected = meanings.find((meaning) => meaning.senses.some((sense) => text(sense.definition))) || meanings[0];
+  const meaning = selected?.entry || {};
+  const definitions = selected?.senses || [];
+  const definition = definitions.find((sense) =>
+    text(sense.definition) && array(sense.examples).some((example) => text(example)),
+  ) || definitions.find((sense) => text(sense.definition)) || {};
+  const pronunciations = array(meaning.pronunciations).map(record)
+    .filter((pronunciation) => pronunciation.type === 'ipa')
+    .map((pronunciation) => ({ text: pronunciation.text, tags: pronunciation.tags }));
+  const { phonetic, omitted } = formatPhonetics(pronunciations);
+  const translations = array(definition.translations).map(record)
+    .filter((translation) => ['cmn', 'zh'].includes(text(record(translation.language).code)))
+    .map((translation) => text(translation.word)).filter((translation) => /[㐀-鿿]/.test(translation));
+  return {
+    fields: {
+      phonetic,
+      pos: partOfSpeech(meaning.partOfSpeech),
+      definition: text(definition.definition),
+      example: text(array(definition.examples).find((example) => text(example))),
+      translation: text([...new Set(translations)].join('；')),
+    },
+    sourceUrl,
+    phoneticOmitted: omitted,
+  };
+}
+
+function englishDictionaryContent(value: unknown, word: string): DictionaryContent | undefined {
+  const dictionary = record(value);
+  if (!matchesWord(dictionary.word, word)) return;
+  // This provider documents English Wiktionary / CC BY-SA 4.0, without per-entry source fields.
+  const sourceUrl = wiktionaryUrl('https://en.wiktionary.org/wiki/' + encodeURIComponent(word));
+  if (!sourceUrl) return;
+
+  const meanings = array(dictionary.partsOfSpeech).map(record)
+    .map((entry) => ({ entry, senses: array(entry.senses).map(record) }));
+  const selected = meanings.find((meaning) => meaning.senses.some((sense) => text(sense.definition)));
+  const definitions = selected?.senses || [];
+  const definition = definitions.find((sense) => text(sense.definition) && text(sense.example)) ||
+    definitions.find((sense) => text(sense.definition)) || {};
+  const { phonetic, omitted } = formatPhonetics([{ text: record(dictionary.pronunciation).ipa }]);
+  return {
+    fields: {
+      phonetic,
+      pos: partOfSpeech(selected?.entry.partOfSpeech),
+      definition: text(definition.definition),
+      example: text(definition.example),
+      translation: '',
+    },
+    sourceUrl,
+    phoneticOmitted: omitted,
+  };
+}
+
 export async function lookup(
   raw: unknown,
   fetcher: Fetcher = fetch,
   signal?: AbortSignal,
+  provider: DictionaryProvider = DEFAULT_DICTIONARY_PROVIDER,
 ): Promise<LookupResult> {
   if (!validWord(raw)) throw new MessageError({ code: 'invalidWord' });
   if (signal?.aborted) throw signal.reason;
@@ -76,8 +158,11 @@ export async function lookup(
     }
   }
 
+  const dictionaryUrl = provider === 'english-dictionary'
+    ? 'https://englishdictionaryapi.com/api/v1/words/' + encodeURIComponent(word)
+    : 'https://freedictionaryapi.com/api/v1/entries/en/' + encodeURIComponent(word) + '?translations=true';
   const [dict, trans] = await Promise.allSettled([
-    request('https://freedictionaryapi.com/api/v1/entries/en/' + encodeURIComponent(word) + '?translations=true'),
+    request(dictionaryUrl),
     request(
       'https://api.mymemory.translated.net/get?q=' +
         encodeURIComponent(word) +
@@ -90,38 +175,15 @@ export async function lookup(
   const sources: string[] = [];
   const warnings: Message[] = [];
   if (dict.status === 'fulfilled') {
-    const dictionary = record(dict.value);
-    const source = record(dictionary.source);
-    const license = record(source.license);
-    const sourceUrl = wiktionaryUrl(source.url);
-    if (
-      text(dictionary.word).toLowerCase() === word && sourceUrl &&
-      license.name === 'CC BY-SA 4.0' && license.url === DICTIONARY_LICENSE_URL
-    ) {
-      const meanings = array(dictionary.entries).map(record)
-        .filter((value) => record(value.language).code === 'en')
-        .map((value) => ({ value, senses: collectSenses(value.senses) }));
-      const selected = meanings.find((value) => value.senses.some((sense) => text(sense.definition))) || meanings[0];
-      const meaning = selected?.value || {};
-      const definitions = selected?.senses || [];
-      const definition = definitions.find((value) =>
-        text(value.definition) && array(value.examples).some((example) => text(example)),
-      ) || definitions.find((value) => text(value.definition)) || {};
-      const phonetic = record(array(meaning.pronunciations).find((value) =>
-        record(value).type === 'ipa' && text(record(value).text),
-      ));
-      entry.phonetic = text(phonetic.text);
-      const pos = text(meaning.partOfSpeech);
-      entry.pos = pos ? pos[0].toUpperCase() + pos.slice(1) : '';
-      entry.definition = text(definition.definition);
-      entry.example = text(array(definition.examples).find((value) => text(value)));
-      const translations = array(definition.translations).map(record)
-        .filter((value) => ['cmn', 'zh'].includes(text(record(value.language).code)))
-        .map((value) => text(value.word)).filter((value) => /[㐀-鿿]/.test(value));
-      entry.translation = text([...new Set(translations)].join('；'));
-      if (entry.phonetic || entry.pos || entry.definition || entry.example || entry.translation) {
+    const content = provider === 'english-dictionary'
+      ? englishDictionaryContent(dict.value, word)
+      : freeDictionaryContent(dict.value, word);
+    if (content) {
+      Object.assign(entry, content.fields);
+      if (content.phoneticOmitted) warnings.push({ code: 'phoneticOmitted' });
+      if (Object.values(content.fields).some(Boolean)) {
         sources.push(
-          'FreeDictionaryAPI.com | Wiktionary: ' + sourceUrl +
+          dictionaryProviders[provider].name + ' | Wiktionary: ' + content.sourceUrl +
           ' | CC BY-SA 4.0: ' + DICTIONARY_LICENSE_URL + ' | 词典摘录，可经编辑',
         );
       }

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDBFactory, IDBVersionChangeEvent, forceCloseDatabase } from 'fake-indexeddb';
+import { IDBFactory, IDBKeyRange, IDBVersionChangeEvent, forceCloseDatabase } from 'fake-indexeddb';
 import { createEntry, sample } from '../src/entry';
 import type { DatedEntry } from '../src/entry';
+import { MessageError } from '../src/messages';
 import { createWordStore, databaseName } from '../src/storage';
 
 const created = '2026-09-28T08:00:00.000Z';
@@ -77,6 +78,87 @@ test('保存采用七个字段和注入时间，倒序读取，重复词保留�
   assert.deepEqual(await other.list(), []);
 });
 
+test('按 ID 删除后重开和另一连接均可见，其余内容、倒序和部署目录不受影响', async t => {
+  const factory = new IDBFactory();
+  const name = databaseName('https://example.test/remove/');
+  const store = createWordStore({ name, indexedDB: factory, now: () => new Date(created) });
+  const peer = createWordStore({ name, indexedDB: factory });
+  const other = createWordStore({ name: databaseName('https://example.test/other/'), indexedDB: factory });
+  t.after(() => Promise.all([store.close(), peer.close(), other.close()]));
+  const first = await store.save({ ...createEntry('first'), translation: '合成首项', source: 'Synthetic first fixture' });
+  const removed = await store.save(createEntry('removed'));
+  const last = await store.save({
+    ...createEntry('last'),
+    phonetic: 'US /læst/ · UK /lɑːst/',
+    pos: 'Adjective',
+    definition: 'A synthetic last entry.',
+    example: 'This is the last synthetic example.',
+    source: 'Synthetic last fixture',
+  });
+  const otherFirst = await other.save(createEntry('first'));
+  const otherRemoved = await other.save({ ...createEntry('removed'), translation: '另一部署的合成词' });
+  assert.equal(otherRemoved.id, removed.id);
+  assert.deepEqual(await peer.list(), [last, removed, first]);
+
+  assert.equal(await store.remove(removed.id), undefined);
+  assert.deepEqual(await store.list(), [last, first]);
+  assert.deepEqual(await peer.list(), [last, first]);
+  await store.close();
+  assert.deepEqual(await store.list(), [last, first]);
+  assert.deepEqual(await other.list(), [otherRemoved, otherFirst]);
+
+  await store.remove(first.id);
+  assert.deepEqual(await store.list(), [last]);
+  await store.remove(last.id);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await peer.list(), []);
+  await store.close();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await other.list(), [otherRemoved, otherFirst]);
+});
+
+test('删除不存在或已删除的 ID 幂等，最大安全整数合法且不影响其他记录', async t => {
+  const store = createWordStore({ name: 'missing-remove', indexedDB: new IDBFactory() });
+  t.after(() => store.close());
+  assert.equal(await store.remove(1), undefined);
+  assert.deepEqual(await store.list(), []);
+  const removed = await store.save(createEntry('removed'));
+  const survivor = await store.save(createEntry('survivor'));
+  assert.equal(removed.id, 1);
+  for (const id of [removed.id, removed.id, 99, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(await store.remove(id), undefined);
+    assert.deepEqual(await store.list(), [survivor]);
+  }
+});
+
+test('双音标、单口音及旧 IPA 保存重开后完整保留，库名和 v1 不含词典偏好', async t => {
+  const factory = new IDBFactory();
+  const name = databaseName('https://example.test/wordbook/');
+  const store = createWordStore({ name, indexedDB: factory, now: () => new Date(created) });
+  t.after(() => store.close());
+  const expected = [
+    ['dual', 'US /təˈmeɪ.toʊ/ · UK /təˈmɑː.təʊ/'],
+    ['american', 'US /təˈmeɪ.toʊ/'],
+    ['british', 'UK /təˈmɑː.təʊ/'],
+    ['legacy', sample.phonetic],
+  ].map(([word, phonetic], index) => ({ ...sample, word, phonetic, created, id: index + 1 }));
+  for (const { id, created: _created, ...value } of expected) {
+    const saved = await store.save({ ...value, provider: 'english-dictionary', dictionaryProvider: 'free-dictionary' });
+    assert.deepEqual(saved, { ...value, created, id });
+  }
+  await store.close();
+  assert.deepEqual(await store.list(), [...expected].reverse());
+  assert.deepEqual(await factory.databases(), [{ name: 'wordbook:/wordbook/', version: 1 }]);
+  const db = await openDatabase(factory, name, 1);
+  t.after(() => db.close());
+  const read = db.transaction('words').objectStore('words').getAll();
+  const raw = await new Promise<unknown>((resolve, reject) => {
+    read.onsuccess = () => resolve(read.result);
+    read.onerror = () => reject(read.error);
+  });
+  assert.deepEqual(raw, expected);
+});
+
 test('数据库 v1 只有 words 仓库、自动递增 id 和唯一 word 索引', async t => {
   const factory = new IDBFactory();
   const store = createWordStore({ name: 'schema', indexedDB: factory });
@@ -106,6 +188,36 @@ test('非法保存和无效设备时间不写入，后续有效操作仍可执�
   assert.equal((await store.save(sample)).id, 1);
 });
 
+test('非法删除 ID 在打开数据库前以 storageInvalidId 拒绝，不能转换为键或范围删除', async t => {
+  const factory = new IDBFactory();
+  const seed = createWordStore({ name: 'invalid-remove', indexedDB: factory });
+  t.after(() => seed.close());
+  const first = await seed.save(createEntry('first'));
+  const second = await seed.save(createEntry('second'));
+  await seed.close();
+  const open = factory.open.bind(factory);
+  let opens = 0;
+  factory.open = (name, version) => {
+    opens++;
+    return open(name, version);
+  };
+  const store = createWordStore({ name: 'invalid-remove', indexedDB: factory });
+  t.after(() => store.close());
+  const invalidIds: unknown[] = [
+    0, -0, -1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1,
+    '1', undefined, null, true, 1n, {}, [1], IDBKeyRange.only(first.id), IDBKeyRange.bound(first.id, second.id),
+  ];
+  for (const id of invalidIds) {
+    await assert.rejects(store.remove(id as number), error =>
+      error instanceof MessageError && error.detail.code === 'storageInvalidId');
+  }
+  assert.equal(opens, 0);
+  assert.deepEqual(await store.list(), [second, first]);
+  assert.equal(opens, 1);
+  assert.equal(await store.remove(first.id), undefined);
+  assert.deepEqual(await store.list(), [second]);
+});
+
 test('两连接并发保存同一规范词只有一个成功，不覆盖先写入者', async t => {
   const factory = new IDBFactory();
   const left = createWordStore({ name: 'concurrent', indexedDB: factory });
@@ -123,6 +235,27 @@ test('两连接并发保存同一规范词只有一个成功，不覆盖先写�
   assert.match(String(rejected[0].reason), /原词条已保留/);
   assert.deepEqual(await left.list(), [saved[0].value]);
   assert.deepEqual(await right.list(), [saved[0].value]);
+});
+
+test('另一连接删除再保存同词分配新 ID，旧连接删除过期 ID 不会误删新词', async t => {
+  const factory = new IDBFactory();
+  const left = createWordStore({ name: 'remove-readd', indexedDB: factory, now: () => new Date(earlier) });
+  const right = createWordStore({ name: 'remove-readd', indexedDB: factory, now: () => new Date(created) });
+  t.after(() => Promise.all([left.close(), right.close()]));
+  const original = await left.save({ ...createEntry('shared'), translation: '原始合成词' });
+  const survivor = await left.save(createEntry('survivor'));
+  assert.deepEqual(await right.list(), [survivor, original]);
+  await right.remove(original.id);
+  const fresh = await right.save({
+    ...createEntry(' SHARED '), translation: '新合成词', definition: 'A synthetic replacement.', source: 'Synthetic replacement fixture',
+  });
+  assert.ok(fresh.id > survivor.id);
+  assert.equal(fresh.word, original.word);
+  assert.equal(await left.remove(original.id), undefined);
+  assert.deepEqual(await left.list(), [fresh, survivor]);
+  assert.deepEqual(await right.list(), [fresh, survivor]);
+  await left.close();
+  assert.deepEqual(await left.list(), [fresh, survivor]);
 });
 
 test('导入已有库词优先、文件内首条优先，保留日期并丢弃客户端 ID', async t => {
@@ -209,6 +342,58 @@ test('请求成功后事务中止仍拒绝并原子回滚，随后可以重试',
   assert.deepEqual(await store.list(), [existing]);
   assert.deepEqual(await store.importEntries([dated('first'), dated('second')]), { imported: 2, skipped: 0 });
   assert.deepEqual((await store.list()).map(entry => entry.id), [3, 2, 1]);
+});
+
+test('删除请求成功后事务中止仍拒绝，重开保留原记录且重试可提交', async t => {
+  const factory = new IDBFactory();
+  let abort = false;
+  let succeeded = 0;
+  observeConnections(factory, db => interceptWrites(db, (words, transaction) => {
+    if (!abort) return;
+    abort = false;
+    const remove = words.delete.bind(words);
+    words.delete = (...args: Parameters<IDBObjectStore['delete']>) => {
+      const request = remove(...args);
+      request.addEventListener('success', () => {
+        succeeded++;
+        transaction.abort();
+      });
+      return request;
+    };
+  }));
+  const store = createWordStore({ name: 'abort-remove', indexedDB: factory });
+  t.after(() => store.close());
+  const removed = await store.save(createEntry('removed'));
+  const survivor = await store.save(createEntry('survivor'));
+  abort = true;
+  await assert.rejects(store.remove(removed.id), { name: 'MessageError', detail: { code: 'storageAborted' } });
+  assert.equal(succeeded, 1);
+  assert.deepEqual(await store.list(), [survivor, removed]);
+  await store.close();
+  assert.deepEqual(await store.list(), [survivor, removed]);
+  assert.equal(await store.remove(removed.id), undefined);
+  assert.deepEqual(await store.list(), [survivor]);
+});
+
+test('同步删除失败拒绝且不改变词库，随后同一 ID 可以重试', async t => {
+  const factory = new IDBFactory();
+  let fail = false;
+  observeConnections(factory, db => interceptWrites(db, words => {
+    if (!fail) return;
+    words.delete = () => {
+      fail = false;
+      throw new DOMException('Inactive', 'TransactionInactiveError');
+    };
+  }));
+  const store = createWordStore({ name: 'sync-remove', indexedDB: factory });
+  t.after(() => store.close());
+  const removed = await store.save(createEntry('removed'));
+  const survivor = await store.save(createEntry('survivor'));
+  fail = true;
+  await assert.rejects(store.remove(removed.id), { name: 'MessageError', detail: { code: 'storageInactive' } });
+  assert.deepEqual(await store.list(), [survivor, removed]);
+  assert.equal(await store.remove(removed.id), undefined);
+  assert.deepEqual(await store.list(), [survivor]);
 });
 
 test('意外主键 ConstraintError 不是重复词，整批回滚而不吞错', async t => {

@@ -209,6 +209,14 @@ export function createWordStore(options: StoreOptions) {
     });
   }
 
+  async function remove(id: number): Promise<void> {
+    if (!Number.isSafeInteger(id) || id <= 0)
+      throw new MessageError({ code: 'storageInvalidId' });
+    return transact<void>('readwrite', (words, watch, result) => {
+      watch(words.delete(id), () => result(undefined));
+    });
+  }
+
   async function importEntries(values: readonly DatedEntry[]): Promise<{ imported: number; skipped: number }> {
     if (!Array.isArray(values)) throw new MessageError({ code: 'importEntriesInvalid' });
     // 包括重复项在内，先校验整批内容，再开始唯一的读写事务。
@@ -238,5 +246,5 @@ export function createWordStore(options: StoreOptions) {
     await Promise.allSettled([...active]);
   }
 
-  return { list, save, importEntries, close };
+  return { list, save, remove, importEntries, close };
 }

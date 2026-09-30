@@ -48,12 +48,39 @@ test('both locales have complete UI and message catalogs with matching value typ
   assert.equal(ui['zh-CN'].speak('apple'), '朗读 apple');
 });
 
+test('compact dictionary hints and source-aware disclosure labels are localized', () => {
+  assert.equal(ui['zh-CN'].dictionaryHint, '切换会取消当前查询，保留已完成草稿。');
+  assert.equal(ui.en.dictionaryHint, 'Switching cancels active lookups; completed drafts stay.');
+  assert.equal(ui['zh-CN'].dictionaryAccentHint, '此词典不标注口音。');
+  assert.equal(ui.en.dictionaryAccentHint, 'Accents are not labeled.');
+  assert.equal(ui['zh-CN'].entryDetails, '详情与来源');
+  assert.equal(ui.en.entryDetails, 'Details & source');
+});
+
 test('duplicate word parameters are preserved and formatted only at display time', () => {
   const message: Message = { code: 'duplicateWord', params: { word: "don't" } };
   const before = structuredClone(message);
   assert.equal(formatMessage('zh-CN', message), '“don\'t” 已在词本中，原词条已保留。');
   assert.equal(formatMessage('en', message), '“don\'t” is already in your notebook. The original entry was kept.');
   assert.deepEqual(message, before);
+});
+
+test('deletion labels, confirmation and structured feedback preserve the word in both locales', () => {
+  const word = "don't";
+  assert.equal(ui['zh-CN'].deleteWord(word), '删除 don\'t');
+  assert.equal(ui.en.deleteWord(word), 'Delete don\'t');
+  assert.equal(ui['zh-CN'].confirmDelete(word), '确定删除“don\'t”吗？此操作无法撤销。');
+  assert.equal(ui.en.confirmDelete(word), 'Delete “don\'t”? This cannot be undone.');
+  const message: Message = { code: 'deleted', params: { word } };
+  const before = structuredClone(message);
+  assert.equal(formatMessage('zh-CN', message), '已从词本删除“don\'t”。');
+  assert.equal(formatMessage('en', message), 'Deleted “don\'t” from your notebook.');
+  assert.deepEqual(message, before);
+  const failure: Message = { code: 'deleteFailed', params: { reason: { code: 'storageAborted' } } };
+  assert.equal(formatMessage('zh-CN', failure), '删除失败：本地词库操作已中止，未保存任何更改。请重试。');
+  assert.equal(formatMessage('en', failure), 'Deletion failed: The local notebook operation was aborted. No changes were saved. Please try again.');
+  assert.match(formatMessage('zh-CN', { code: 'operationBusy' }), /删除/);
+  assert.match(formatMessage('en', { code: 'operationBusy' }), /delete/);
 });
 
 test('import counts use independent English plurals for zero, one and many', () => {
@@ -142,12 +169,26 @@ test('only exact known source labels translate, not URLs, unknown content or old
     assert.equal(sourceLabel('en', original), translated);
   }
   for (const value of [
-    '', 'FreeDictionaryAPI.com', 'CC BY-SA 4.0', '用户自己的中文笔记：手动填写',
+    '', 'FreeDictionaryAPI.com', 'EnglishDictionaryAPI.com', 'CC BY-SA 4.0', '用户自己的中文笔记：手动填写',
     'Wiktionary: https://en.wiktionary.org/wiki/apple', 'MyMemory（机器翻译） | 旧来源',
     '<img src=x onerror=alert(1)>', '__proto__',
   ]) {
     assert.equal(sourceLabel('zh-CN', value), value);
     assert.equal(sourceLabel('en', value), value);
+  }
+});
+
+test('accent UI and omission warnings are localized without rewriting stored IPA', () => {
+  const entry = { ...sample, phonetic: 'US /a/ · UK [b]', id: 1, created: '2024-02-29T12:34:56.789Z' };
+  const before = serializeBackup([entry], entry.created);
+  assert.equal(ui['zh-CN'].unknownAccent, '口音未标注');
+  assert.equal(ui.en.unknownAccent, 'Accent not specified');
+  for (const locale of ['zh-CN', 'en'] as const) {
+    assert.match(ui[locale].phoneticHint, /US.*UK/);
+    assert.ok(ui[locale].dictionaryHint);
+    assert.ok(ui[locale].dictionaryAccentHint);
+    assert.ok(formatMessage(locale, { code: 'phoneticOmitted' }));
+    assert.equal(serializeBackup([entry], entry.created), before);
   }
 });
 

@@ -26,9 +26,9 @@ export const defaultMessages = {
   storageBlocked: '本地词库被其他标签页占用，请关闭其他 Wordbook 页面后重试。',
   storageInvalidRecord: '本地词库记录格式无效，请保留现有数据并检查备份。',
   invalidClock: '无法获取有效的当前时间，请检查设备时间后重试。',
-  storageInvalidId: '本地词库返回了无效的词条编号。',
+  storageInvalidId: '词条编号无效，无法操作本地词库。',
   importEntriesInvalid: '导入的词条必须是数组。',
-  operationBusy: '请等待当前保存或备份操作完成。',
+  operationBusy: '请等待当前保存、删除或备份操作完成。',
   manualInvalidWord: '请先输入有效的英语单词或短语（最多 80 个字符）。',
   storeNotReady: '生词本尚未打开，请先重新加载。',
   saved: '已保存到当前浏览器的生词本。',
@@ -39,11 +39,14 @@ export const defaultMessages = {
   missingTranslation: '未取得中文释义，请手动补充。',
   missingExample: '词典未提供此释义的例句，可补充你遇到的原句。',
   missingPhonetic: '未取得音标。',
+  phoneticOmitted: '部分音标过长，已完整省略；可核对来源后手动补充。',
+  deleted: ({ word }: { word: string }) => `已从词本删除“${word}”。`,
   duplicateWord: ({ word }: { word: string }) => `“${word}” 已在词本中，原词条已保留。`,
   imported: ({ imported, skipped }: { imported: number; skipped: number }) =>
     `已导入 ${imported} 个单词，跳过 ${skipped} 个重复词。已有内容未覆盖。`,
   loadFailed: (reason: string) => '无法读取生词本：' + reason,
   importFailed: (reason: string) => '导入失败：' + reason,
+  deleteFailed: (reason: string) => '删除失败：' + reason,
 };
 
 type PlainCode = {
@@ -52,9 +55,9 @@ type PlainCode = {
 
 export type Message =
   | { code: PlainCode }
-  | { code: 'duplicateWord'; params: { word: string } }
+  | { code: 'duplicateWord' | 'deleted'; params: { word: string } }
   | { code: 'imported'; params: { imported: number; skipped: number } }
-  | { code: 'loadFailed' | 'importFailed'; params: { reason: Message } };
+  | { code: 'loadFailed' | 'importFailed' | 'deleteFailed'; params: { reason: Message } };
 
 export type MessageCatalog = {
   [K in keyof typeof defaultMessages]: typeof defaultMessages[K] extends string ? string : typeof defaultMessages[K];
@@ -62,10 +65,12 @@ export type MessageCatalog = {
 
 export function renderMessage(catalog: MessageCatalog, message: Message): string {
   switch (message.code) {
-    case 'duplicateWord': return catalog.duplicateWord(message.params);
+    case 'duplicateWord':
+    case 'deleted': return catalog[message.code](message.params);
     case 'imported': return catalog.imported(message.params);
     case 'loadFailed':
-    case 'importFailed': return catalog[message.code](renderMessage(catalog, message.params.reason));
+    case 'importFailed':
+    case 'deleteFailed': return catalog[message.code](renderMessage(catalog, message.params.reason));
     default: return catalog[message.code];
   }
 }
