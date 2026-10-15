@@ -1,5 +1,5 @@
 // Keep the notebook in browser storage; only autofill requests external dictionaries and translation.
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useCallback, type MouseEvent } from 'react';
 import {
   Search,
   Check,
@@ -12,55 +12,23 @@ import {
   X,
 } from 'lucide-react';
 import { createEntry, sample, validWord, type Entry, type StoredEntry } from './entry';
-import { DICTIONARY_LICENSE_URL, hasMyMemorySource, lookup as queryWord, wiktionaryUrl } from './vocabulary';
+import { hasMyMemorySource, lookup as queryWord } from './vocabulary';
 import { createWordStore, databaseName } from './storage';
 import { MAX_BACKUP_BYTES, parseBackup, serializeBackup } from './backup';
 import { errorMessage, MessageError, type Message } from './messages';
-import { ui, formatMessage, sourceLabel, formatDate, readLocale, writeLocale, type Locale } from './i18n';
+import { ui, formatMessage, readLocale, writeLocale, type Locale } from './i18n';
 import { dictionaryProviders, isDictionaryProvider, readDictionaryProvider, writeDictionaryProvider, removeLegacyTranslationPreferences, type DictionaryProvider } from './dictionary-providers';
-import { hasAccentLabels } from './phonetics';
+import { EntryContent, Phonetic, Source } from './entry-content';
+import { paginateLibraryEntries, selectLibraryEntries, type LibrarySort } from './library';
+import { eligiblePracticeEntries, initialPracticeState, practiceReducer, samplePracticeEntries } from './practice';
+import { PracticePanel } from './practice-panel';
+import { isPlainNavigation, readRoute, routeHash, routeUrl, type PageRoute } from './hash-route';
 
 const dbNamespace = databaseName(window.location.href);
 const store = createWordStore({ name: dbNamespace });
 type Operation = '' | 'save' | 'delete' | 'import' | 'export';
-
-function Phonetic({ value, locale }: { value: string; locale: Locale }) {
-  const labeled = hasAccentLabels(value);
-  return (
-    <span className="phonetic" title={labeled ? ui[locale].accentLabels : undefined}>
-      {value}{!labeled && <span className="accent-note"> · {ui[locale].unknownAccent}</span>}
-    </span>
-  );
-}
-
-function Source({ value, locale }: { value: string; locale: Locale }) {
-  const provider = Object.values(dictionaryProviders).find((item) => value.startsWith(item.name + ' | '));
-  if (!provider)
-    return <span className="source">{ui[locale].source}{sourceLabel(locale, value)}</span>;
-  return (
-    <span className="source">
-      {ui[locale].source}{value.split(' | ').map((part, index) => {
-        let href = '';
-        let label = sourceLabel(locale, part);
-        if (part === provider.name) href = provider.homepage;
-        if (part.startsWith('Wiktionary: ')) {
-          href = wiktionaryUrl(part.slice('Wiktionary: '.length));
-          if (href) label = ui[locale].wiktionaryArticle;
-        }
-        if (part === 'CC BY-SA 4.0: ' + DICTIONARY_LICENSE_URL) {
-          href = DICTIONARY_LICENSE_URL;
-          label = 'CC BY-SA 4.0';
-        }
-        return (
-          <span key={index}>
-            {index > 0 && ' · '}
-            {href ? <a href={href} target="_blank" rel="noopener noreferrer">{label}</a> : label}
-          </span>
-        );
-      })}
-    </span>
-  );
-}
+type NavigationTarget = 'words' | 'add' | 'capture' | 'import' | 'practice-return';
+type NavigationIntent = { route: PageRoute; target: NavigationTarget; revision: number };
 
 export default function Home() {
   const [locale, setLocale] = useState<Locale>(() => readLocale(dbNamespace));
@@ -86,7 +54,131 @@ export default function Home() {
   const queryRequest = useRef(0);
   const queryController = useRef<AbortController | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const wordsPage = useRef<HTMLElement>(null);
   const collectionHeading = useRef<HTMLHeadingElement>(null);
+  const addHeading = useRef<HTMLHeadingElement>(null);
+  const captureHeading = useRef<HTMLHeadingElement>(null);
+  const importHeading = useRef<HTMLHeadingElement>(null);
+  const practiceStart = useRef<HTMLButtonElement>(null);
+  const librarySearch = useRef<HTMLInputElement>(null);
+  const libraryScroll = useRef({ x: 0, y: 0 });
+  const [route, setRoute] = useState(() => readRoute(window.location.hash));
+  const routeRef = useRef(route);
+  const acceptedUrl = useRef(window.location.href);
+  const pendingNavigation = useRef<NavigationIntent | null>(null);
+  const navigationSequence = useRef(0);
+  const [navigationRevision, setNavigationRevision] = useState(0);
+  const [libraryQuery, setLibraryQuery] = useState('');
+  const [librarySort, setLibrarySort] = useState<LibrarySort>('recent');
+  const [libraryPage, setLibraryPage] = useState(1);
+  const pageTurnFocus = useRef(false);
+  const [practice, dispatchPractice] = useReducer(practiceReducer, initialPracticeState);
+  const practicing = useRef(false);
+  const results = useMemo(() => selectLibraryEntries(words, libraryQuery, librarySort), [words, libraryQuery, librarySort]);
+  const eligible = useMemo(() => eligiblePracticeEntries(results), [results]);
+  const page = paginateLibraryEntries(results, libraryPage);
+
+  // Mount-only listeners and tools share this entry point, using current refs rather than their first render.
+  const navigate = useCallback((next: PageRoute, target?: NavigationTarget, push = true) => {
+    const liveRoute = readRoute(window.location.hash);
+    const canonicalUrl = routeUrl(window.location.href, liveRoute);
+    if (canonicalUrl !== window.location.href)
+      window.history.replaceState(window.history.state, '', canonicalUrl);
+    if (push && liveRoute !== next)
+      window.history.pushState(null, '', routeUrl(canonicalUrl, next));
+    acceptedUrl.current = window.location.href;
+
+    if (next === routeRef.current && !practicing.current && !target) return;
+    // The DOM may still show the previous surface during rapid, batched transitions.
+    if (wordsPage.current && !wordsPage.current.hidden)
+      libraryScroll.current = { x: window.scrollX, y: window.scrollY };
+    const destination = target ?? (next === 'words' && practicing.current ? 'practice-return' : next);
+    routeRef.current = next;
+    practicing.current = false;
+    pageTurnFocus.current = false;
+    const revision = ++navigationSequence.current;
+    pendingNavigation.current = { route: next, target: destination, revision };
+    setRoute(next);
+    setNavigationRevision(revision);
+    dispatchPractice({ type: 'exit' });
+  }, []);
+
+  useLayoutEffect(() => {
+    const previousRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = 'manual';
+    const synchronize = () => {
+      if (window.location.href !== acceptedUrl.current)
+        navigate(readRoute(window.location.hash), undefined, false);
+    };
+    const canonicalUrl = routeUrl(window.location.href, readRoute(window.location.hash));
+    if (canonicalUrl !== window.location.href)
+      window.history.replaceState(window.history.state, '', canonicalUrl);
+    synchronize();
+    window.addEventListener('hashchange', synchronize);
+    return () => {
+      window.removeEventListener('hashchange', synchronize);
+      window.history.scrollRestoration = previousRestoration;
+    };
+  }, [navigate]);
+
+  useLayoutEffect(() => {
+    // Keep the clamped page, even if a later refresh grows the results again.
+    if (libraryPage !== page.page) setLibraryPage(page.page);
+  }, [libraryPage, page.page]);
+
+  useLayoutEffect(() => {
+    if (!pageTurnFocus.current) return;
+    pageTurnFocus.current = false;
+    if (route !== 'words' || routeRef.current !== 'words' || practice.phase !== 'idle') return;
+    collectionHeading.current?.focus({ preventScroll: true });
+    collectionHeading.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
+  }, [libraryPage, practice.phase, route]);
+
+  useLayoutEffect(() => {
+    const intent = pendingNavigation.current;
+    if (!intent || intent.revision !== navigationRevision || intent.route !== route || practice.phase !== 'idle') return;
+    pendingNavigation.current = null;
+    const target = intent.target === 'practice-return'
+      ? practiceStart.current && !practiceStart.current.disabled ? practiceStart.current : collectionHeading.current
+      : intent.target === 'words' ? collectionHeading.current
+      : intent.target === 'import' ? importHeading.current
+      : intent.target === 'capture' ? captureHeading.current : addHeading.current;
+    target?.focus({ preventScroll: true });
+    if (route === 'words') {
+      window.scrollTo({ left: libraryScroll.current.x, top: libraryScroll.current.y, behavior: 'instant' });
+    } else {
+      target?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    }
+  }, [route, navigationRevision, practice.phase]);
+
+  function followRoute(event: MouseEvent<HTMLAnchorElement>, next: PageRoute, target?: NavigationTarget) {
+    if (!isPlainNavigation(event, event.currentTarget)) return;
+    event.preventDefault();
+    navigate(next, target);
+  }
+
+  function startPractice() {
+    if (routeRef.current !== 'words' || practicing.current || loading || !ready.current || operationLock.current || !eligible.length) return;
+    const cards = samplePracticeEntries(eligible);
+    libraryScroll.current = { x: window.scrollX, y: window.scrollY };
+    pendingNavigation.current = null;
+    navigationSequence.current++;
+    pageTurnFocus.current = false;
+    practicing.current = true;
+    dispatchPractice({ type: 'start', cards });
+  }
+
+  function changeLibraryPage(next: number) {
+    if (routeRef.current !== 'words' || practicing.current || next < 1 || next > page.pageCount || next === page.page) return;
+    pageTurnFocus.current = true;
+    setLibraryPage(next);
+  }
+
+  function clearLibrarySearch() {
+    setLibraryQuery('');
+    setLibraryPage(1);
+    if (routeRef.current === 'words' && !practicing.current) librarySearch.current?.focus();
+  }
 
   function switchLocale(next: Locale) {
     localeRef.current = next;
@@ -96,9 +188,11 @@ export default function Home() {
 
   useEffect(() => {
     document.documentElement.lang = locale;
-    document.title = ui[locale].pageTitle;
+    const title = practice.phase !== 'idle' ? ui[locale].practiceTitle
+      : route === 'add' ? ui[locale].addWord : ui[locale].myWords;
+    document.title = `${title} · Wordbook`;
     document.querySelector('meta[name="description"]')?.setAttribute('content', ui[locale].pageDescription);
-  }, [locale]);
+  }, [locale, route, practice.phase]);
 
   async function refresh(silent = false) {
     const request = ++listRequest.current;
@@ -247,10 +341,11 @@ export default function Home() {
       setLoading(false);
       await store.remove(entry.id);
       if (!active.current) return;
-      if (document.activeElement === trigger && document.hasFocus()) {
+      if (routeRef.current === 'words' && !practicing.current && wordsPage.current && !wordsPage.current.hidden
+        && document.activeElement === trigger && document.hasFocus()) {
         const article = trigger.closest('article');
-        const next = article?.nextElementSibling?.querySelector<HTMLButtonElement>('.sound')
-          ?? article?.previousElementSibling?.querySelector<HTMLButtonElement>('.sound')
+        const next = article?.nextElementSibling?.querySelector<HTMLElement>('summary')
+          ?? article?.previousElementSibling?.querySelector<HTMLElement>('summary')
           ?? collectionHeading.current;
         next?.focus({ preventScroll: true });
       }
@@ -324,6 +419,7 @@ export default function Home() {
               if (!validWord(word)) throw new Error('Invalid word');
               try {
                 if (operationLock.current) throw new MessageError({ code: 'operationBusy' });
+                navigate('add', 'capture');
                 setInput(word);
                 const result = await lookup(word);
                 return {
@@ -400,49 +496,27 @@ export default function Home() {
   function card(entry: StoredEntry) {
     return (
       <article className="entry" key={entry.id}>
-        <div className={'word-pair' + (entry.translation ? ' has-translation' : '')}>
-          <div className="word-line">
-            <h3>{entry.word}</h3>
-            <button className="sound" onClick={() => speak(entry.word)} aria-label={text.speak(entry.word)}>
-              <Volume2 size={18} />
-            </button>
+        <details className="entry-details">
+          <summary>
+            <span className="word-title" lang="en">{entry.word}</span>
+            {entry.pos && <span className="pos">{entry.pos}</span>}
+          </summary>
+          <EntryContent entry={entry} locale={locale} showPos={false} />
+          <div className="entry-delete">
             <button
-              className="icon-button delete-word"
+              className="text-button delete-word"
               type="button"
               aria-label={text.deleteWord(entry.word)}
-              title={text.deleteWord(entry.word)}
               aria-disabled={!!operation || !storeReady}
               onClick={(event) => void remove(entry, event.currentTarget)}
             >
-              <Trash2 size={18} />
+              <Trash2 size={16} />{text.deleteWord(entry.word)}
             </button>
           </div>
-          {(entry.phonetic || entry.pos) && (
-            <div className="word-meta">
-              {entry.phonetic && <Phonetic value={entry.phonetic} locale={locale} />}
-              {entry.pos && <span className="pos">{entry.pos}</span>}
-            </div>
-          )}
-          <p className="meaning"><span>{entry.translation || text.translationPlaceholder}</span></p>
-        </div>
-        <details className="entry-details">
-          <summary>{text.entryDetails}</summary>
-          {(entry.definition || entry.example) && (
-            <div className="entry-content">
-              {entry.definition && <p className="definition">{entry.definition}</p>}
-              {entry.example && (
-                <div className="example">
-                  <span>{text.example}</span>
-                  <p>{entry.example}</p>
-                </div>
-              )}
-            </div>
-          )}
-          <footer>
-            <time dateTime={entry.created}>{formatDate(locale, entry.created)}</time>
-            {entry.source && <Source value={entry.source} locale={locale} />}
-          </footer>
         </details>
+        <button className="sound" onClick={() => speak(entry.word)} aria-label={text.speak(entry.word)}>
+          <Volume2 size={18} />
+        </button>
       </article>
     );
   }
@@ -451,7 +525,7 @@ export default function Home() {
     <div className="app">
       <header className="topbar">
         <div className="topbar-inner">
-          <a className="brand" href={import.meta.env.BASE_URL} aria-label={text.home}>
+          <a className="brand" href={routeHash('words')} onClick={(event) => followRoute(event, 'words')} aria-label={text.home}>
             wordbook
           </a>
           <div className="language-switch" role="group" aria-label={text.language}>
@@ -464,174 +538,283 @@ export default function Home() {
             </button>
           </div>
         </div>
+        <nav className="page-navigation" aria-label={text.mainNavigation}>
+          <a href={routeHash('words')} aria-current={route === 'words' ? 'page' : undefined}
+            onClick={(event) => followRoute(event, 'words')}>{text.myWords}</a>
+          <a href={routeHash('add')} aria-current={route === 'add' ? 'page' : undefined}
+            onClick={(event) => followRoute(event, 'add')}>{text.addWord}</a>
+        </nav>
       </header>
       <main>
-        <div className="composer">
-          <section className="capture" aria-label={text.addWord}>
-            <div className="capture-heading">
-              <h1>{text.captureHeading}</h1>
-              <div className="dictionary-choice">
-                <label className="sr-only" htmlFor="dictionary-provider">{text.dictionary}</label>
-                <select
-                  id="dictionary-provider"
-                  className="provider-select"
-                  value={provider}
-                  title={dictionaryProviders[provider].name}
-                  disabled={!!operation}
-                  aria-describedby="dictionary-hint"
-                  onChange={(event) => switchProvider(event.target.value)}
-                >
-                  {Object.entries(dictionaryProviders).map(([id, item]) => (
-                    <option value={id} key={id} title={item.name}>{item.label}</option>
-                  ))}
-                </select>
+        <div className="feedback">
+          <div role="alert" aria-atomic="true">
+            {error && <p className="message error">{formatMessage(locale, error)}</p>}
+            {loadError && (
+              <div className="message error">
+                {formatMessage(locale, loadError)}{' '}
+                <button className="text-button" disabled={loading || !!operation} onClick={() => {
+                  if (!operationLock.current) void refresh();
+                }}>{text.reload}</button>
               </div>
-            </div>
-            <p id="dictionary-hint" className="field-hint">
-              {text.dictionaryHint}{provider === 'english-dictionary' && ' ' + text.dictionaryAccentHint}
-            </p>
-            <form className="lookup-form" onSubmit={(event) => {
-              event.preventDefault();
-              void lookup(input).catch(() => {});
-            }}>
-              <label className="sr-only" htmlFor="word">{text.englishWord}</label>
-              <input
-                id="word"
-                value={input}
-                onChange={(event) => {
-                  if (queryController.current) cancelLookup();
-                  setInput(event.target.value);
-                }}
-                placeholder={text.wordPlaceholder}
-                maxLength={80}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                enterKeyHint="search"
-                required
-                disabled={!!operation}
-              />
-              <button className="primary" disabled={!!operation || querying || !input.trim()}>
-                {querying ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
-                {querying ? text.querying : text.autoFill}
-              </button>
-            </form>
-            <button
-              className="text-button manual-entry"
-              type="button"
-              disabled={!!operation || !input.trim()}
-              onClick={manualEntry}
-            >
-              <PenLine size={16} /> {text.enterManually}
-            </button>
-          </section>
-          <div className="feedback">
-            <div role="alert" aria-atomic="true">
-              {error && <p className="message error">{formatMessage(locale, error)}</p>}
-            </div>
-            <div role="status" aria-atomic="true">
-              {notice && <p className="message success">{formatMessage(locale, notice)}</p>}
-            </div>
+            )}
           </div>
-          {draft && (
-            <section className="draft" aria-label={text.editDraft}>
-              <div className="draft-heading">
-                <h2>{text.reviewSave}</h2>
+          <div role="status" aria-atomic="true">
+            {notice && <p className="message success">
+              {formatMessage(locale, notice)}
+              {route === 'add' && (notice.code === 'saved' || notice.code === 'imported') && <>{' '}
+                <a className="text-button" href={routeHash('words')}
+                  onClick={(event) => followRoute(event, 'words')}>{text.viewWords}</a>
+              </>}
+            </p>}
+          </div>
+        </div>
+        {loading && <p className="loading">{text.loading}</p>}
+        <div className="workspace">
+          <section className="route-page add-page" hidden={route !== 'add' || practice.phase !== 'idle'} aria-labelledby="add-title">
+            <div className="page-heading">
+              <h1 id="add-title" ref={addHeading} tabIndex={-1}>{text.addWord}</h1>
+              {(querying || draft) && <span className="composer-status">{querying ? text.querying : text.unsavedDraft}</span>}
+            </div>
+            <div className="composer">
+              <section className="capture" aria-label={text.captureHeading}>
+                <div className="capture-heading">
+                  <h2 ref={captureHeading} tabIndex={-1}>{text.captureHeading}</h2>
+                  <div className="dictionary-choice">
+                    <label className="sr-only" htmlFor="dictionary-provider">{text.dictionary}</label>
+                    <select
+                      id="dictionary-provider"
+                      className="provider-select"
+                      value={provider}
+                      title={dictionaryProviders[provider].name}
+                      disabled={!!operation}
+                      aria-describedby="dictionary-hint"
+                      onChange={(event) => switchProvider(event.target.value)}
+                    >
+                      {Object.entries(dictionaryProviders).map(([id, item]) => (
+                        <option value={id} key={id} title={item.name}>{item.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p id="dictionary-hint" className="field-hint">
+                  {text.dictionaryHint}{provider === 'english-dictionary' && ' ' + text.dictionaryAccentHint}
+                </p>
+                <form className="lookup-form" onSubmit={(event) => {
+                  event.preventDefault();
+                  void lookup(input).catch(() => {});
+                }}>
+                  <label className="sr-only" htmlFor="word">{text.englishWord}</label>
+                  <input
+                    id="word"
+                    value={input}
+                    onChange={(event) => {
+                      if (queryController.current) cancelLookup();
+                      setInput(event.target.value);
+                    }}
+                    placeholder={text.wordPlaceholder}
+                    maxLength={80}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    enterKeyHint="search"
+                    required
+                    disabled={!!operation}
+                  />
+                  <button className="primary" disabled={!!operation || querying || !input.trim()}>
+                    {querying ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
+                    {querying ? text.querying : text.autoFill}
+                  </button>
+                </form>
                 <button
-                  className="icon-button"
-                  aria-label={text.closeDraft}
-                  disabled={!!operation}
-                  onClick={() => { cancelLookup(); setDraft(null); }}
+                  className="text-button manual-entry"
+                  type="button"
+                  disabled={!!operation || !input.trim()}
+                  onClick={manualEntry}
                 >
-                  <X size={20} />
+                  <PenLine size={16} /> {text.enterManually}
                 </button>
-              </div>
-              <p className="draft-tip">
-                {draft.source === '手动填写'
-                  ? text.manualTip
-                  : hasMyMemorySource(draft.source)
-                    ? text.machineTip
-                    : text.dictionaryTip}
-              </p>
-              {warnings.length > 0 && <p className="warning">{warnings.map((warning) => formatMessage(locale, warning)).join(' ')}</p>}
-              <div className="fields basic-fields">
-                {field('word', text.word)}
-                {field('translation', text.translation)}
-              </div>
-              {draft.phonetic && <p className="draft-phonetic"><Phonetic value={draft.phonetic} locale={locale} /></p>}
-              <details className="draft-details">
-                <summary>{text.moreDetails}</summary>
-                <div className="fields">
-                  {field('phonetic', text.phonetic)}
-                  {field('pos', text.pos)}
-                  {field('definition', text.definition)}
-                  {field('example', text.example)}
+                {!loading && !loadError && !words.length && (
+                  <button className="text-button sample-entry" disabled={!!operation} onClick={() => openDraft(sample)}>
+                    {text.trySample}
+                  </button>
+                )}
+              </section>
+              {draft && (
+                <section className="draft" aria-label={text.editDraft}>
+                  <div className="draft-heading">
+                    <h3>{text.reviewSave}</h3>
+                    <button
+                      className="icon-button"
+                      aria-label={text.closeDraft}
+                      disabled={!!operation}
+                      onClick={() => { cancelLookup(); setDraft(null); }}
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <p className="draft-tip">
+                    {draft.source === '手动填写'
+                      ? text.manualTip
+                      : hasMyMemorySource(draft.source)
+                        ? text.machineTip
+                        : text.dictionaryTip}
+                  </p>
+                  {warnings.length > 0 && <p className="warning">{warnings.map((warning) => formatMessage(locale, warning)).join(' ')}</p>}
+                  <div className="fields basic-fields">
+                    {field('word', text.word)}
+                    {field('translation', text.translation)}
+                  </div>
+                  {draft.phonetic && <p className="draft-phonetic"><Phonetic value={draft.phonetic} locale={locale} /></p>}
+                  <details className="draft-details">
+                    <summary>{text.moreDetails}</summary>
+                    <div className="fields">
+                      {field('phonetic', text.phonetic)}
+                      {field('pos', text.pos)}
+                      {field('definition', text.definition)}
+                      {field('example', text.example)}
+                    </div>
+                  </details>
+                  <div className="draft-actions">
+                    <button className="primary" disabled={!!operation || !storeReady} onClick={save}>
+                      {operation === 'save' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                      {text.save}
+                    </button>
+                  </div>
+                  <Source value={draft.source} locale={locale} />
+                </section>
+              )}
+            </div>
+            <section className="import-backup" aria-labelledby="import-title">
+              <h2 id="import-title" ref={importHeading} tabIndex={-1}>{text.importBackup}</h2>
+              <p className="backup-note">{text.importNote}</p>
+              <button className="secondary" disabled={!!operation || !storeReady}
+                onClick={() => fileInput.current?.click()}>
+                {operation === 'import' ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />}
+                {text.importBackup}
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".json,application/json"
+                aria-label={text.chooseBackup}
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file) void importBackup(file);
+                }}
+              />
+            </section>
+          </section>
+          <section className="route-page collection" ref={wordsPage}
+            hidden={route !== 'words' || practice.phase !== 'idle'} aria-labelledby="words-title">
+            <div className="collection-heading">
+              <h1 id="words-title" ref={collectionHeading} tabIndex={-1}>{text.myWords} <span>{words.length}</span></h1>
+              <details className="backup-tools">
+                <summary>{text.backup}</summary>
+                <div className="backup-panel">
+                  <div className="collection-actions">
+                    <button className="secondary" disabled={!!operation || !storeReady} onClick={exportBackup}>
+                      {operation === 'export' ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
+                      {text.exportBackup}
+                    </button>
+                  </div>
+                  <p className="backup-note">{text.storageNote}</p>
                 </div>
               </details>
-              <div className="draft-actions">
-                <button className="primary" disabled={!!operation || !storeReady} onClick={save}>
-                  {operation === 'save' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
-                  {text.save}
+            </div>
+            <p className="storage-note">{text.storageSummary}</p>
+            <div className="library-tools">
+              <div className="library-search">
+                <label className="sr-only" htmlFor="library-search">{text.searchLibrary}</label>
+                <input
+                  ref={librarySearch}
+                  id="library-search"
+                  type="search"
+                  placeholder={text.librarySearchPlaceholder}
+                  value={libraryQuery}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  onChange={(event) => {
+                    setLibraryQuery(event.target.value);
+                    setLibraryPage(1);
+                  }}
+                />
+                {libraryQuery && (
+                  <button className="icon-button" aria-label={text.clearSearch} onClick={clearLibrarySearch}><X size={18} /></button>
+                )}
+              </div>
+              <label className="library-sort">
+                <span className="sr-only">{text.sortLibrary}</span>
+                <select className="provider-select" value={librarySort} onChange={(event) => {
+                  setLibrarySort(event.target.value as LibrarySort);
+                  setLibraryPage(1);
+                }}>
+                  <option value="recent">{text.sortRecent}</option>
+                  <option value="alphabetical">{text.sortAlphabetical}</option>
+                </select>
+              </label>
+              <p className="library-results" role="status" aria-atomic="true">
+                {!loading && !loadError && text.libraryResults(page.start, page.end, results.length, words.length)}
+              </p>
+            </div>
+            {words.length > 0 && (
+              <div className="practice-launch">
+                <p className="practice-ready">{text.practiceReady(eligible.length)}</p>
+                <button
+                  ref={practiceStart}
+                  className="primary"
+                  disabled={loading || !storeReady || !!operation || !eligible.length}
+                  aria-describedby="practice-scope"
+                  onClick={startPractice}
+                >
+                  {text.startPractice}
                 </button>
+                <p className="field-hint" id="practice-scope">{text.practiceScope}</p>
+                {!loading && !loadError && results.length > 0 && !eligible.length && <p className="field-hint">{text.practiceUnavailable}</p>}
               </div>
-              <Source value={draft.source} locale={locale} />
-            </section>
-          )}
-        </div>
-        <section className="collection" aria-label={text.myWords}>
-          <div className="collection-heading">
-            <h2 ref={collectionHeading} tabIndex={-1}>{text.myWords} <span>{words.length}</span></h2>
-            <details className="backup-tools">
-              <summary>{text.backup}</summary>
-              <div className="backup-panel">
-                <div className="collection-actions">
-                  <button
-                    className="secondary"
-                    disabled={!!operation || !storeReady}
-                    onClick={() => fileInput.current?.click()}
-                  >
-                    {operation === 'import' ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />}
-                    {text.importBackup}
-                  </button>
-                  <button className="secondary" disabled={!!operation || !storeReady} onClick={exportBackup}>
-                    {operation === 'export' ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
-                    {text.exportBackup}
-                  </button>
+            )}
+            <div className="entry-list">{page.entries.map(card)}</div>
+            {page.pageCount > 1 && (
+              <nav className="library-pagination" aria-label={text.libraryPagination}>
+                <button className="secondary" disabled={page.page === 1} onClick={() => changeLibraryPage(page.page - 1)}>
+                  {text.previousPage}
+                </button>
+                <p>{text.libraryPage(page.page, page.pageCount)}</p>
+                <button className="secondary" disabled={page.page === page.pageCount} onClick={() => changeLibraryPage(page.page + 1)}>
+                  {text.nextPage}
+                </button>
+              </nav>
+            )}
+            {!loading && !loadError && words.length > 0 && !results.length && (
+              <div className="empty-state">
+                <p>{text.noMatches}</p>
+                <button className="text-button" onClick={clearLibrarySearch}>{text.clearSearch}</button>
+              </div>
+            )}
+            {!loading && !loadError && !words.length && (
+              <div className="empty-state">
+                <p>{text.emptyNotebook}</p>
+                <div className="empty-actions">
+                  <a className="primary" href={routeHash('add')}
+                    onClick={(event) => followRoute(event, 'add')}>{text.addWord}</a>
+                  <a className="secondary" href={routeHash('add')}
+                    onClick={(event) => followRoute(event, 'add', 'import')}>{text.importBackup}</a>
                 </div>
-                <p className="backup-note">{text.storageNote}</p>
-                <p className="backup-note">{text.importNote}</p>
               </div>
-            </details>
-          </div>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".json,application/json"
-            aria-label={text.chooseBackup}
-            hidden
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = '';
-              if (file) void importBackup(file);
-            }}
+            )}
+          </section>
+        </div>
+        {route === 'words' && practice.phase !== 'idle' && (
+          <PracticePanel
+            state={practice}
+            locale={locale}
+            dispatch={dispatchPractice}
+            onSpeak={speak}
+            onExit={() => navigate('words', 'practice-return')}
           />
-          <p className="storage-note">{text.storageSummary}</p>
-          {loading && <p className="loading">{text.loading}</p>}
-          {loadError && (
-            <div className="message error" role="alert">
-              {formatMessage(locale, loadError)} <button className="text-button" onClick={() => void refresh()}>{text.reload}</button>
-            </div>
-          )}
-          {words.map(card)}
-          {!loading && !loadError && !words.length && (
-            <div className="empty-state">
-              <p>{text.emptyNotebook}</p>
-              <button className="text-button" disabled={!!operation} onClick={() => openDraft(sample)}>
-                {text.trySample}
-              </button>
-            </div>
-          )}
-        </section>
+        )}
       </main>
     </div>
   );

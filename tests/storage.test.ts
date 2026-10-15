@@ -40,12 +40,26 @@ function openDatabase(factory: IDBFactory, name: string, version: number): Promi
 test('database names use stable deployment directories, ignoring page names, fragments and queries without mixing projects', () => {
   for (const url of [
     'https://example.com/wordbook/',
+    'https://example.com/wordbook/#/words',
+    'https://example.com/wordbook/#/add',
     'https://example.com/wordbook/?search=apple#word',
+    'https://example.com/wordbook/?search=apple#/words',
+    'https://example.com/wordbook/?search=apple#/add',
     'https://example.com/wordbook/index.html?version=3#word',
+    'https://example.com/wordbook/index.html?version=3#/words',
+    'https://example.com/wordbook/index.html?version=3#/add',
     'https://example.com/other/../wordbook/index.html',
   ]) assert.equal(databaseName(url), 'wordbook:/wordbook/');
-  assert.equal(databaseName('https://example.com/index.html?x=1#top'), 'wordbook:/');
-  assert.equal(databaseName('https://example.com/'), 'wordbook:/');
+  for (const url of [
+    'https://example.com/',
+    'https://example.com/#/words',
+    'https://example.com/#/add',
+    'https://example.com/?search=apple#/words',
+    'https://example.com/?search=apple#/add',
+    'https://example.com/index.html?x=1#top',
+    'https://example.com/index.html?x=1#/words',
+    'https://example.com/index.html?x=1#/add',
+  ]) assert.equal(databaseName(url), 'wordbook:/');
   assert.notEqual(databaseName('https://example.com/a/'), databaseName('https://example.com/b/'));
 });
 
