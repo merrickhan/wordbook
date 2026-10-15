@@ -48,13 +48,107 @@ test('both locales have complete UI and message catalogs with matching value typ
   assert.equal(ui['zh-CN'].speak('apple'), '朗读 apple');
 });
 
-test('compact dictionary hints and source-aware disclosure labels are localized', () => {
+test('compact dictionary hints and local library controls are localized', () => {
   assert.equal(ui['zh-CN'].dictionaryHint, '切换会取消当前查询，保留已完成草稿。');
   assert.equal(ui.en.dictionaryHint, 'Switching cancels active lookups; completed drafts stay.');
   assert.equal(ui['zh-CN'].dictionaryAccentHint, '此词典不标注口音。');
   assert.equal(ui.en.dictionaryAccentHint, 'Accents are not labeled.');
-  assert.equal(ui['zh-CN'].entryDetails, '详情与来源');
-  assert.equal(ui.en.entryDetails, 'Details & source');
+  assert.equal(ui['zh-CN'].searchLibrary, '搜索已存单词');
+  assert.equal(ui.en.searchLibrary, 'Search saved words');
+  assert.equal(ui['zh-CN'].sortRecent, '最近添加');
+  assert.equal(ui.en.sortRecent, 'Recently added');
+  assert.equal('entryDetails' in ui.en, false);
+});
+
+test('page navigation, capture headings and retained draft status have paired labels', () => {
+  assert.equal(ui['zh-CN'].mainNavigation, '主要页面');
+  assert.equal(ui.en.mainNavigation, 'Main pages');
+  assert.equal(ui['zh-CN'].viewWords, '查看我的单词');
+  assert.equal(ui.en.viewWords, 'View my words');
+  assert.match(ui['zh-CN'].emptyNotebook, /添加.*导入/);
+  assert.match(ui.en.emptyNotebook, /Add.*import/);
+  assert.equal(ui['zh-CN'].captureHeading, '查词或填写');
+  assert.equal(ui.en.captureHeading, 'Look up or enter');
+  assert.equal(ui['zh-CN'].unsavedDraft, '未保存草稿');
+  assert.equal(ui.en.unsavedDraft, 'Unsaved draft');
+  for (const text of [ui['zh-CN'], ui.en]) {
+    assert.notEqual(text.addWord, text.captureHeading);
+    assert.notEqual(text.unsavedDraft, text.querying);
+    assert.notEqual(text.unsavedDraft, text.reviewSave);
+  }
+});
+
+test('library pagination distinguishes visible ranges, matches and notebook totals in both locales', () => {
+  const zh = ui['zh-CN'];
+  const en = ui.en;
+  assert.equal(zh.libraryPagination, '词库分页');
+  assert.equal(en.libraryPagination, 'Word list pages');
+  assert.equal(zh.previousPage, '上一页');
+  assert.equal(zh.nextPage, '下一页');
+  assert.equal(en.previousPage, 'Previous');
+  assert.equal(en.nextPage, 'Next');
+  for (const [page, total] of [[1, 1], [1, 3], [2, 3], [3, 3], [500, 500]]) {
+    assert.equal(zh.libraryPage(page, total), `第 ${page} / ${total} 页`);
+    assert.equal(en.libraryPage(page, total), `Page ${page} of ${total}`);
+  }
+  for (const total of [0, 1, 41]) {
+    assert.equal(zh.libraryResults(0, 0, 0, total), `匹配 0 个 · 词库 ${total} 个`);
+    assert.equal(en.libraryResults(0, 0, 0, total), `0 matches · ${total} ${total === 1 ? 'word' : 'words'} total`);
+  }
+  assert.equal(zh.libraryResults(1, 1, 1, 1), '第 1–1 / 1 个单词');
+  assert.equal(en.libraryResults(1, 1, 1, 1), 'Showing 1–1 of 1 word');
+  for (const [start, end] of [[1, 20], [21, 40], [41, 41]]) {
+    assert.equal(zh.libraryResults(start, end, 41, 41), `第 ${start}–${end} / 41 个单词`);
+    assert.equal(en.libraryResults(start, end, 41, 41), `Showing ${start}–${end} of 41 words`);
+    assert.equal(zh.libraryResults(start, end, 41, 53), `第 ${start}–${end} 个 · 匹配 41 个 / 词库 53 个`);
+    assert.equal(en.libraryResults(start, end, 41, 53), `Showing ${start}–${end} of 41 matches · 53 words total`);
+  }
+  assert.equal(en.libraryResults(1, 1, 1, 41), 'Showing 1–1 of 1 match · 41 words total');
+  assert.equal(zh.libraryResults(1, 1, 1, 41), '第 1–1 个 · 匹配 1 个 / 词库 41 个');
+  assert.match(zh.practiceScope, /不限当前页/);
+  assert.match(en.practiceScope, /across all pages/);
+});
+
+test('practice counts preserve zero, one and multiple parameters in both locales', () => {
+  for (const count of [0, 1, 10]) {
+    assert.equal(ui['zh-CN'].practiceReady(count), `${count} 个单词可练习`);
+    assert.equal(ui.en.practiceReady(count), `${count} ${count === 1 ? 'word' : 'words'} available`);
+    assert.equal(ui['zh-CN'].practiceProgress(count, 10), `第 ${count} / 10 个`);
+    assert.equal(ui.en.practiceProgress(count, 10), `Word ${count} of 10`);
+    assert.equal(ui['zh-CN'].practiceRated(count, 10), `已评 ${count} / 10 个`);
+    assert.equal(ui.en.practiceRated(count, 10), `Rated ${count} of 10`);
+    assert.equal(ui['zh-CN'].practiceUnratedRemaining(count), `还有 ${count} 个词未评。先完成自评，再重练没想起的词。`);
+    assert.equal(ui.en.practiceUnratedRemaining(count), `Rate the remaining ${count} ${count === 1 ? 'word' : 'words'} before starting a missed-word round.`);
+    assert.equal(ui['zh-CN'].practiceResult(count, 10), `本轮想对了 ${count} / 10 个`);
+    assert.equal(ui.en.practiceResult(count, 10), `Recalled ${count} of 10 words this round`);
+    assert.equal(ui['zh-CN'].practiceMisses(count), `可以再练习这次没想起的 ${count} 个单词。`);
+    assert.equal(ui.en.practiceMisses(count), `Try the ${count} ${count === 1 ? 'word' : 'words'} you missed again.`);
+  }
+  assert.equal(ui.en.practiceResult(1, 1), 'Recalled 1 of 1 word this round');
+  assert.equal(ui['zh-CN'].didNotRecall, '没想起');
+  assert.equal(ui['zh-CN'].recalledCorrectly, '想对了');
+  assert.equal(ui.en.didNotRecall, 'Didn’t recall');
+  assert.equal(ui.en.recalledCorrectly, 'Recalled correctly');
+  assert.match(ui.en.practiceScope, /current results/);
+  assert.match(ui.en.practiceScope, /10/);
+  assert.match(ui.en.practiceSessionOnly, /not long-term mastery/);
+  assert.notEqual(ui.en.practiceTitle, ui.en.reviewSave);
+});
+
+test('practice navigation, editable ratings and partial results have distinct paired labels', () => {
+  assert.equal(ui['zh-CN'].previousWord, '上一词');
+  assert.equal(ui['zh-CN'].nextWord, '下一词');
+  assert.equal(ui.en.previousWord, 'Previous word');
+  assert.equal(ui.en.nextWord, 'Next word');
+  assert.equal(ui['zh-CN'].practiceCurrentRating(ui['zh-CN'].practiceUnrated), '当前自评：未评');
+  assert.equal(ui.en.practiceCurrentRating(ui.en.practiceUnrated), 'Current rating: Unrated');
+  for (const text of [ui['zh-CN'], ui.en]) {
+    assert.notEqual(text.practiceSummary, text.practiceComplete);
+    assert.notEqual(text.continueUnrated, text.retryMissed);
+    assert.notEqual(text.reviewRound, text.startPractice);
+  }
+  assert.match(ui.en.practiceNavigationHint, /doesn’t rate/);
+  assert.match(ui.en.practiceRatingHint, /change/);
 });
 
 test('duplicate word parameters are preserved and formatted only at display time', () => {
@@ -137,9 +231,12 @@ test('preferences reuse the database deployment namespace without changing its n
   writeLocale(root, 'en', getStorage);
   assert.equal(readLocale(subpath, getStorage), 'zh-CN');
   writeLocale(subpath, 'zh-CN', getStorage);
-  for (const url of ['https://example.com/index.html?x=1#top', 'https://example.com/?x=1'])
+  for (const url of ['https://example.com/index.html?x=1#top', 'https://example.com/?x=1',
+    'https://example.com/#/words', 'https://example.com/#/add'])
     assert.equal(readLocale(databaseName(url), getStorage), 'en');
-  assert.equal(readLocale(databaseName('https://example.com/wordbook/index.html?x=1#top'), getStorage), 'zh-CN');
+  for (const url of ['https://example.com/wordbook/index.html?x=1#top',
+    'https://example.com/wordbook/#/words', 'https://example.com/wordbook/#/add'])
+    assert.equal(readLocale(databaseName(url), getStorage), 'zh-CN');
   assert.deepEqual([...storage.data], [['wordbook:/:locale', 'en'], ['wordbook:/wordbook/:locale', 'zh-CN']]);
 });
 

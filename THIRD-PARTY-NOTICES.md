@@ -24,9 +24,9 @@ its service name, original Wiktionary article URL, license, and modification not
 the existing `source` field, including in version 1 JSON backups. Editing the word,
 switching dictionaries, or changing interface language does not rewrite that source.
 The application displays links to the service, original article, and license. Draft
-attribution remains directly visible; saved entries expose full attribution through
-**Details & source**. Collapsing the details does not remove attribution from the entry
-or its backup.
+attribution remains directly visible on the visible Add word page. Expand a saved
+word or reveal a practice answer to view its complete attribution. Collapsing a word
+does not remove attribution from the entry or its backup.
 
 Redistributed dictionary content must retain applicable attribution, license information,
 and modification notices; adaptations must meet the license's ShareAlike requirements.
