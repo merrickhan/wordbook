@@ -55,7 +55,7 @@ test('v1 export and import preserve all seven fields, dates and sources for dual
   assert.deepEqual(parsed, values);
   const store = createWordStore({ name: 'phonetic-backup', indexedDB: new IDBFactory(), now: () => new Date(created) });
   t.after(() => store.close());
-  assert.deepEqual(await store.importEntries(parsed), { imported: 5, skipped: 0 });
+  assert.deepEqual(await store.importEntries(parsed), { imported: 5, updated: 0, skipped: 0 });
   await store.close();
   const restored = await store.list();
   assert.deepEqual(restored, values.map((value, index) => ({ ...value, id: index + 1 })).reverse());
@@ -107,14 +107,14 @@ test('import assigns new IDs while preserving creation times and relative order 
   t.after(() => store.close());
   const seed = await store.save(createEntry('existing'));
   const parsed = parseBackup(serializeBackup(originals, exportedAt));
-  assert.deepEqual(await store.importEntries(parsed), { imported: 3, skipped: 0 });
+  assert.deepEqual(await store.importEntries(parsed), { imported: 3, updated: 0, skipped: 0 });
   await store.close();
   const restored = await store.list();
   assert.deepEqual(restored.map(value => value.word), ['third', 'second', 'first', 'existing']);
   assert.deepEqual(restored.map(value => value.id), [4, 3, 2, 1]);
   assert.deepEqual(restored.slice(0, 3).map(({ id: _id, ...value }) => value), [...parsed].reverse());
   assert.deepEqual(restored[3], seed);
-  assert.deepEqual(await store.importEntries(parsed), { imported: 0, skipped: 3 });
+  assert.deepEqual(await store.importEntries(parsed), { imported: 0, updated: 0, skipped: 3 });
 });
 
 test('v1 backups exclude deleted entries and earlier backups restore original fields with new IDs while skipping survivors', async t => {
@@ -134,7 +134,7 @@ test('v1 backups exclude deleted entries and earlier backups restore original fi
     },
     { ...createEntry('last'), definition: 'A synthetic surviving entry.', created: exportedAt },
   ];
-  assert.deepEqual(await store.importEntries(values), { imported: 3, skipped: 0 });
+  assert.deepEqual(await store.importEntries(values), { imported: 3, updated: 0, skipped: 0 });
   const originals = await store.list();
   const removed = originals[1];
   const survivors = [originals[0], originals[2]];
@@ -148,15 +148,78 @@ test('v1 backups exclude deleted entries and earlier backups restore original fi
   assert.deepEqual(JSON.parse(after), envelope([values[0], values[2]]));
   assert.deepEqual(parseBackup(after), [values[0], values[2]]);
 
-  assert.deepEqual(await store.importEntries(parseBackup(before)), { imported: 1, skipped: 2 });
+  assert.deepEqual(await store.importEntries(parseBackup(before)), { imported: 1, updated: 0, skipped: 2 });
   await store.close();
   const restored = await store.list();
   assert.ok(restored[0].id > originals[0].id);
   assert.deepEqual(restored[0], { ...removed, id: restored[0].id });
   assert.deepEqual(restored.slice(1), survivors);
-  assert.deepEqual(await store.importEntries(parseBackup(before)), { imported: 0, skipped: 3 });
+  assert.deepEqual(await store.importEntries(parseBackup(before)), { imported: 0, updated: 0, skipped: 3 });
   assert.deepEqual(await store.list(), restored);
   assert.deepEqual(JSON.parse(serializeBackup(restored, exportedAt)), envelope([values[0], values[2], values[1]]));
+});
+
+test('a v1 backup parses, overwrites and reopens with complete fields, opaque sources and stable IDs, then serializes as v1 without IDs', async t => {
+  const factory = new IDBFactory();
+  const name = 'overwrite-backup';
+  const store = createWordStore({ name, indexedDB: factory, now: () => new Date(exportedAt) });
+  t.after(() => store.close());
+  const temporary = await store.save(createEntry('temporary'));
+  await store.remove(temporary.id);
+  const original = await store.save({ ...sample, word: 'tomato' });
+  const unrelated = await store.save({ ...sample, word: 'unrelated', source: 'Historical attribution | unchanged arbitrary note' });
+  const cleared = await store.save({ ...sample, word: 'clear' });
+  const replacement: DatedEntry = {
+    word: 'tomato', phonetic: 'US /təˈmeɪ.toʊ/ · UK /təˈmɑː.təʊ/', translation: '番茄', pos: 'Noun',
+    definition: 'A red fruit used in cooking.', example: 'Slice the tomato for the salad.',
+    source: 'FreeDictionaryAPI.com | Wiktionary: https://en.wiktionary.org/wiki/tomato | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑 | 任意用户备注',
+    created,
+  };
+  const added: DatedEntry = {
+    word: 'could', phonetic: '/kʊd/', translation: '能够', pos: 'Verb',
+    definition: 'A synthetic imported definition.', example: 'We could preserve every field.',
+    source: 'EnglishDictionaryAPI.com | historical source | MyMemory（机器翻译）',
+    created: '2020-01-01T00:00:00.000Z',
+  };
+  const duplicate = { ...entry, word: 'tomato', translation: 'Later duplicate must not replace the first occurrence' };
+  const blank: DatedEntry = { ...createEntry('clear'), source: '', created: '2025-01-01T00:00:00.000Z' };
+  const document = envelope([
+    { ...replacement, word: ' TOMATO ', id: unrelated.id, metadata: { ignored: true } },
+    { ...added, id: original.id, provider: 'ignored' },
+    duplicate,
+    { ...blank, id: -1, extra: ['ignored'] },
+  ]);
+  const originalDocument = structuredClone(document);
+  const text = JSON.stringify(document);
+  const parsed = parseBackup(text);
+  assert.deepEqual(parsed, [replacement, added, duplicate, blank]);
+  const originalParsed = structuredClone(parsed);
+  parsed.forEach(value => Object.freeze(value));
+  Object.freeze(parsed);
+  assert.deepEqual(await store.importEntries(parsed, { overwriteExisting: true }), { imported: 1, updated: 2, skipped: 1 });
+  await store.close();
+  const reopened = createWordStore({ name, indexedDB: factory });
+  t.after(() => reopened.close());
+  const restored = await reopened.list();
+  const expected = [
+    { ...added, id: 5 }, { ...blank, id: cleared.id }, unrelated, { ...replacement, id: original.id },
+  ];
+  assert.deepEqual(restored, expected);
+  assert.deepEqual(restored.map(value => value.id), [5, 4, 3, 2]);
+  assert.deepEqual(await factory.databases(), [{ name, version: 1 }]);
+  const { id: _id, ...unrelatedEntry } = unrelated;
+  const expectedBackup = envelope([replacement, unrelatedEntry, blank, added]);
+  const serialized = serializeBackup(restored, exportedAt);
+  assert.deepEqual(JSON.parse(serialized), expectedBackup);
+  assert.deepEqual(parseBackup(serialized), expectedBackup.entries);
+  for (const value of JSON.parse(serialized).entries) {
+    assert.deepEqual(Object.keys(value).sort(), [...Object.keys(sample), 'created'].sort());
+    assert.equal('id' in value, false);
+  }
+  assert.deepEqual(restored, expected);
+  assert.deepEqual(parsed, originalParsed);
+  assert.deepEqual(document, originalDocument);
+  assert.equal(JSON.stringify(document), text);
 });
 
 test('parsing whitelists and normalizes fields while leaving valid duplicates for import to count', () => {

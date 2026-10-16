@@ -272,7 +272,7 @@ test('a peer deleting and readding a word gets a new ID that cannot be deleted t
   assert.deepEqual(await left.list(), [fresh, survivor]);
 });
 
-test('imports prefer existing words and the first file occurrence, preserving dates and discarding client IDs', async t => {
+test('imports default to preserving existing words and the first file occurrence, retaining dates and discarding client IDs', async t => {
   const store = createWordStore({ name: 'import', indexedDB: new IDBFactory(), now: () => new Date(created) });
   t.after(() => store.close());
   const existing = await store.save({ ...sample, word: 'apple' });
@@ -283,15 +283,157 @@ test('imports prefer existing words and the first file occurrence, preserving da
     { ...dated('cherry'), id: 600 },
     dated('apple'),
   ];
-  assert.deepEqual(await store.importEntries(values), { imported: 2, skipped: 3 });
+  assert.deepEqual(await store.importEntries(values), { imported: 2, updated: 0, skipped: 3 });
   assert.deepEqual(await store.list(), [
     { ...dated('cherry'), id: 3 },
     { ...dated('banana'), translation: '首条', id: 2 },
     existing,
   ]);
-  assert.deepEqual(await store.importEntries(values), { imported: 0, skipped: 5 });
-  assert.deepEqual(await store.importEntries([]), { imported: 0, skipped: 0 });
+  assert.deepEqual(await store.importEntries(values), { imported: 0, updated: 0, skipped: 5 });
+  assert.deepEqual(await store.importEntries([]), { imported: 0, updated: 0, skipped: 0 });
 });
+
+test('empty options, explicit false and non-boolean truthy values never enable overwriting', async t => {
+  const store = createWordStore({ name: 'safe-import-options', indexedDB: new IDBFactory(), now: () => new Date(created) });
+  t.after(() => store.close());
+  const existing = await store.save({ ...sample, word: 'existing' });
+  const values = [
+    { ...dated('existing'), word: ' EXISTING ', translation: 'Do not replace the original' },
+    dated('new'),
+    { ...dated('new'), word: ' NEW ', translation: 'Later duplicate' },
+  ];
+  assert.deepEqual(await store.importEntries(values, { overwriteExisting: false }), { imported: 1, updated: 0, skipped: 2 });
+  const expected = [{ ...dated('new'), id: 2 }, existing];
+  assert.deepEqual(await store.list(), expected);
+  assert.deepEqual(await store.importEntries(values, {}), { imported: 0, updated: 0, skipped: 3 });
+  for (const value of [undefined, false, null, 0, 1, 'true', {}, []]) {
+    assert.deepEqual(await store.importEntries(values, { overwriteExisting: value as boolean }), {
+      imported: 0, updated: 0, skipped: 3,
+    });
+    assert.deepEqual(await store.list(), expected);
+  }
+});
+
+test('overwrite replaces all fields and dates, clears blanks and keeps IDs, order and unrelated records across repeats and reopening', async t => {
+  const factory = new IDBFactory();
+  const name = 'overwrite-import';
+  const store = createWordStore({ name, indexedDB: factory, now: () => new Date(created) });
+  t.after(() => store.close());
+  const temporary = await store.save(createEntry('temporary'));
+  await store.remove(temporary.id);
+  const original = await store.save({ ...sample, word: 'alpha' });
+  const unrelated = await store.save({ ...sample, word: 'unrelated', source: 'Keep this opaque historical attribution' });
+  const cleared = await store.save({ ...sample, word: 'clear' });
+  const identical = await store.save({ ...sample, word: 'identical' });
+  const replacement: DatedEntry = {
+    word: 'alpha', phonetic: 'US /æl.fə/ · UK /æl.fə/', translation: '新的合成释义', pos: 'Adjective',
+    definition: 'A complete replacement definition.', example: 'A completely different example.',
+    source: 'Historical source | arbitrary user note | MyMemory（机器翻译）', created: earlier,
+  };
+  const blank: DatedEntry = { ...dated('clear'), source: '' };
+  const first: DatedEntry = { ...dated('new first'), translation: 'First occurrence wins', created: '2020-01-01T00:00:00.000Z' };
+  const last = { ...dated('new last'), created: '2025-01-01T00:00:00.000Z' };
+  const values = Object.freeze([
+    { ...replacement, word: ' ALPHA ', phonetic: ` ${replacement.phonetic} `, translation: ` ${replacement.translation} `, id: unrelated.id, extra: { ignore: true } },
+    { ...first, word: ' NEW FIRST ', id: original.id, extra: 'ignored' },
+    { ...dated('alpha'), translation: 'Later existing-word duplicate must not win' },
+    { ...blank, phonetic: ' \t', translation: '　', pos: ' ', definition: '\n', example: '\r\n', source: ' \t　', id: -1 },
+    { ...identical, id: 9999, dictionaryProvider: 'ignored' },
+    { ...dated('new first'), translation: 'Later new-word duplicate must not win' },
+    { ...last, id: 600 },
+  ].map(value => Object.freeze(value)));
+  const input = structuredClone(values);
+  const expected = [
+    { ...last, id: 7 }, { ...first, id: 6 }, identical,
+    { ...blank, id: cleared.id }, unrelated, { ...replacement, id: original.id },
+  ];
+  for (const counts of [
+    { imported: 2, updated: 3, skipped: 2 },
+    { imported: 0, updated: 5, skipped: 2 },
+  ]) {
+    const result = await store.importEntries(values, { overwriteExisting: true });
+    assert.deepEqual(result, counts);
+    assert.equal(result.imported + result.updated + result.skipped, values.length);
+    assert.deepEqual(await store.list(), expected);
+    assert.deepEqual(values, input);
+  }
+  for (const overwriteExisting of [false, true]) {
+    assert.deepEqual(await store.importEntries([], { overwriteExisting }), { imported: 0, updated: 0, skipped: 0 });
+    assert.deepEqual(await store.list(), expected);
+  }
+  await store.close();
+  const reopened = createWordStore({ name, indexedDB: factory });
+  t.after(() => reopened.close());
+  assert.deepEqual(await reopened.list(), expected);
+  assert.deepEqual(await factory.databases(), [{ name, version: 1 }]);
+  const db = await openDatabase(factory, name, 1);
+  t.after(() => db.close());
+  const request = db.transaction('words').objectStore('words').getAll();
+  const raw = await new Promise<unknown>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  // list() also validates records, so inspect raw storage to catch accidentally persisted IDs or extras.
+  assert.deepEqual(raw, [...expected].reverse());
+  assert.deepEqual(values, input);
+});
+
+test('overwrite uses one readwrite transaction and publishes completed add and put counts only after commit', async t => {
+  const factory = new IDBFactory();
+  const modes: IDBTransactionMode[] = [];
+  const events: string[] = [];
+  let observing = false;
+  observeConnections(factory, db => {
+    const transact = db.transaction.bind(db);
+    db.transaction = (...args: Parameters<IDBDatabase['transaction']>) => {
+      const transaction = transact(...args);
+      if (observing) modes.push(transaction.mode);
+      return transaction;
+    };
+    interceptWrites(db, (words, transaction) => {
+      if (!observing) return;
+      for (const method of ['add', 'put'] as const) {
+        const write = words[method].bind(words);
+        words[method] = (value: unknown, key?: IDBValidKey) => {
+          const request = write(value, key);
+          request.addEventListener('success', () => { events.push(method); });
+          return request;
+        };
+      }
+      transaction.addEventListener('complete', () => { events.push('commit'); });
+    });
+  });
+  const store = createWordStore({ name: 'overwrite-commit', indexedDB: factory });
+  t.after(() => store.close());
+  await store.save(createEntry('existing'));
+  observing = true;
+  const counts = await store.importEntries([dated('existing'), dated('new'), dated('new')], { overwriteExisting: true }).then(result => {
+    events.push('resolved');
+    return result;
+  });
+  observing = false;
+  assert.deepEqual(modes, ['readwrite']);
+  assert.deepEqual(events.slice(0, 2).sort(), ['add', 'put']);
+  assert.deepEqual(events.slice(2), ['commit', 'resolved']);
+  assert.deepEqual(counts, { imported: 1, updated: 1, skipped: 1 });
+});
+
+for (const connection of ['cold', 'warm']) {
+  for (const overwriteExisting of [false, true]) {
+    test(`${connection} imports snapshot overwriteExisting=${overwriteExisting} before callers mutate the options`, async t => {
+      const store = createWordStore({ name: 'snapshot-options', indexedDB: new IDBFactory(), now: () => new Date(created) });
+      t.after(() => store.close());
+      const original = await store.save({ ...sample, word: 'existing' });
+      if (connection === 'cold') await store.close();
+      const replacement = { ...dated('existing'), translation: 'Snapshot replacement' };
+      const options = { overwriteExisting };
+      const pending = store.importEntries([replacement], options);
+      options.overwriteExisting = !overwriteExisting;
+      assert.deepEqual(await pending, { imported: 0, updated: Number(overwriteExisting), skipped: Number(!overwriteExisting) });
+      assert.deepEqual(await store.list(), [overwriteExisting ? { ...replacement, id: original.id } : original]);
+    });
+  }
+}
 
 test('concurrent imports check duplicates within the same read-write transaction without rejecting overlapping batches', async t => {
   const factory = new IDBFactory();
@@ -303,26 +445,270 @@ test('concurrent imports check duplicates within the same read-write transaction
     right.importEntries([dated('shared'), dated('right')]),
   ]);
   assert.equal(results.reduce((total, value) => total + value.imported, 0), 3);
+  assert.equal(results.reduce((total, value) => total + value.updated, 0), 0);
   assert.equal(results.reduce((total, value) => total + value.skipped, 0), 1);
+  for (const result of results) assert.equal(result.imported + result.updated + result.skipped, 2);
   assert.deepEqual((await left.list()).map(entry => entry.word).sort(), ['left', 'right', 'shared']);
 });
 
-test('invalid final entries and invalid duplicates reject the whole batch without partial writes', async t => {
-  const store = createWordStore({ name: 'invalid-import', indexedDB: new IDBFactory() });
-  t.after(() => store.close());
-  const original = await store.save(createEntry('existing'));
-  for (const values of [
-    [dated('valid'), { ...dated('last'), definition: null }],
-    [dated('valid'), { ...dated('valid'), created: '2024-01-01' }],
-    [dated('valid'), { ...dated('existing'), source: undefined }],
-  ]) {
-    await assert.rejects(store.importEntries(values as unknown as DatedEntry[]));
-    assert.deepEqual(await store.list(), [original]);
-  }
-  await assert.rejects(store.importEntries(new Array<DatedEntry>(1)), /内容无效/);
-  assert.deepEqual(await store.list(), [original]);
-  assert.deepEqual(await store.importEntries([dated('valid')]), { imported: 1, skipped: 0 });
+test('concurrent overlapping overwrite imports serialize both existing and newly shared words without changing their IDs', async t => {
+  const factory = new IDBFactory();
+  const left = createWordStore({ name: 'concurrent-overwrite', indexedDB: factory });
+  const right = createWordStore({ name: 'concurrent-overwrite', indexedDB: factory });
+  t.after(() => Promise.all([left.close(), right.close()]));
+  const shared = await left.save({ ...sample, word: 'shared' });
+  const unrelated = await left.save({ ...sample, word: 'unrelated' });
+  await right.list();
+  const batches = ['left', 'right'].map(side => [
+    { ...dated('shared'), word: ' SHARED ', translation: `${side} existing replacement` },
+    { ...dated('overlap'), word: ' OVERLAP ', source: `${side} new shared attribution` },
+    dated(side),
+    { ...dated('overlap'), source: `${side} ignored later occurrence` },
+  ]);
+  const results = await Promise.all([
+    left.importEntries(batches[0], { overwriteExisting: true }),
+    right.importEntries(batches[1], { overwriteExisting: true }),
+  ]);
+  const first = results.findIndex(result => result.imported === 2);
+  assert.notEqual(first, -1);
+  const second = 1 - first;
+  assert.deepEqual(results[first], { imported: 2, updated: 1, skipped: 1 });
+  assert.deepEqual(results[second], { imported: 1, updated: 2, skipped: 1 });
+  for (const result of results) assert.equal(result.imported + result.updated + result.skipped, 4);
+  const expected = [
+    { ...batches[second][2], id: 5 }, { ...batches[first][2], id: 4 },
+    { ...batches[second][1], word: 'overlap', id: 3 }, unrelated,
+    { ...batches[second][0], word: 'shared', id: shared.id },
+  ];
+  assert.deepEqual(await left.list(), expected);
+  assert.deepEqual(await right.list(), expected);
+  await Promise.all([left.close(), right.close()]);
+  assert.deepEqual(await left.list(), expected);
 });
+
+for (const overwriteExisting of [false, true]) {
+  test(`invalid final, duplicate and sparse entries validate before any transaction with overwriteExisting=${overwriteExisting}`, async t => {
+    const factory = new IDBFactory();
+    let transactions = 0;
+    observeConnections(factory, db => {
+      const transact = db.transaction.bind(db);
+      db.transaction = (...args: Parameters<IDBDatabase['transaction']>) => {
+        transactions++;
+        return transact(...args);
+      };
+    });
+    const store = createWordStore({ name: 'invalid-import', indexedDB: factory });
+    t.after(() => store.close());
+    const original = await store.save({ ...sample, word: 'existing' });
+    const replacement = { ...dated('existing'), translation: 'Must not partially replace' };
+    const sparse = Object.assign(new Array<DatedEntry>(3), { 0: replacement, 1: dated('valid') });
+    for (const values of [
+      [replacement, dated('valid'), { ...dated('last'), definition: null }],
+      [replacement, dated('valid'), { ...dated('valid'), word: ' VALID ', created: '2024-01-01' }],
+      [replacement, dated('valid'), { ...dated('existing'), source: undefined }],
+      sparse, new Array<DatedEntry>(1),
+    ]) {
+      const before = transactions;
+      await assert.rejects(store.importEntries(values as unknown as DatedEntry[], { overwriteExisting }));
+      assert.equal(transactions, before, 'Do not begin a transaction until every record, including duplicates and holes, is valid');
+      assert.deepEqual(await store.list(), [original]);
+    }
+    assert.deepEqual(await store.importEntries([replacement, dated('valid')], { overwriteExisting }), {
+      imported: 1, updated: Number(overwriteExisting), skipped: Number(!overwriteExisting),
+    });
+    assert.deepEqual(await store.list(), [
+      { ...dated('valid'), id: 2 }, overwriteExisting ? { ...replacement, id: original.id } : original,
+    ]);
+  });
+}
+
+test('overwrite rejects non-positive, unsafe and non-numeric existing IDs without committing any part of the batch', async t => {
+  const invalidIds: IDBValidKey[] = [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity, '1', new Date(0), [1]];
+  for (const id of invalidIds) {
+    const factory = new IDBFactory();
+    const name = 'invalid-overwrite-id';
+    const store = createWordStore({ name, indexedDB: factory });
+    t.after(() => store.close());
+    await store.save({ ...sample, word: 'existing' });
+    const db = await openDatabase(factory, name, 1);
+    t.after(() => db.close());
+    const transaction = db.transaction('words', 'readwrite');
+    transaction.objectStore('words').add({ ...dated('corrupt'), id });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+    });
+    const readRaw = () => new Promise<unknown>((resolve, reject) => {
+      const request = db.transaction('words').objectStore('words').getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const before = await readRaw();
+    await assert.rejects(store.importEntries([dated('existing'), dated('new'), dated('corrupt')], { overwriteExisting: true }), {
+      name: 'MessageError', detail: { code: 'storageInvalidId' },
+    });
+    assert.deepEqual(await readRaw(), before);
+    await store.close();
+    assert.deepEqual(await readRaw(), before);
+  }
+});
+
+test('overwrite preserves a maximum-safe-integer existing ID instead of using the incoming ID or allocating another', async t => {
+  const factory = new IDBFactory();
+  const name = 'safe-overwrite-id';
+  const store = createWordStore({ name, indexedDB: factory });
+  t.after(() => store.close());
+  const unrelated = await store.save(createEntry('unrelated'));
+  const db = await openDatabase(factory, name, 1);
+  t.after(() => db.close());
+  const transaction = db.transaction('words', 'readwrite');
+  transaction.objectStore('words').add({ ...dated('boundary'), id: Number.MAX_SAFE_INTEGER });
+  await new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error);
+  });
+  const replacement = { ...dated('boundary'), translation: 'Replace at the same safe key', created };
+  const values = [{ ...replacement, id: unrelated.id }];
+  assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), {
+    imported: 0, updated: 1, skipped: 0,
+  });
+  await store.close();
+  assert.deepEqual(await store.list(), [{ ...replacement, id: Number.MAX_SAFE_INTEGER }, unrelated]);
+});
+
+test('an abort after successful put and add requests rolls both back, survives reopening and permits a complete retry', async t => {
+  const factory = new IDBFactory();
+  let abort = false;
+  const succeeded: string[] = [];
+  let committed = false;
+  observeConnections(factory, db => interceptWrites(db, (words, transaction) => {
+    if (!abort) return;
+    abort = false;
+    for (const method of ['put', 'add'] as const) {
+      const write = words[method].bind(words);
+      words[method] = (value: unknown, key?: IDBValidKey) => {
+        const request = write(value, key);
+        request.addEventListener('success', () => {
+          succeeded.push(method);
+          if (succeeded.length === 2) transaction.abort();
+        });
+        return request;
+      };
+    }
+    transaction.addEventListener('complete', () => { committed = true; });
+  }));
+  const store = createWordStore({ name: 'abort-overwrite', indexedDB: factory });
+  t.after(() => store.close());
+  const existing = await store.save({ ...sample, word: 'existing' });
+  const unrelated = await store.save({ ...sample, word: 'unrelated' });
+  const values = [dated('existing'), dated('first'), dated('second')];
+  abort = true;
+  await assert.rejects(store.importEntries(values, { overwriteExisting: true }), {
+    name: 'MessageError', detail: { code: 'storageAborted' },
+  });
+  assert.deepEqual(succeeded, ['put', 'add']);
+  assert.equal(committed, false);
+  assert.deepEqual(await store.list(), [unrelated, existing]);
+  await store.close();
+  assert.deepEqual(await store.list(), [unrelated, existing]);
+  assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), { imported: 2, updated: 1, skipped: 0 });
+  assert.deepEqual(await store.list(), [
+    { ...dated('second'), id: 4 }, { ...dated('first'), id: 3 }, unrelated, { ...dated('existing'), id: existing.id },
+  ]);
+});
+
+for (const failingMethod of ['put', 'add'] as const) {
+  test(`a synchronous ${failingMethod} failure inside an import callback aborts both queued puts and adds and allows retry`, async t => {
+    const factory = new IDBFactory();
+    let fail = false;
+    const attempted: string[] = [];
+    observeConnections(factory, db => interceptWrites(db, words => {
+      if (!fail) return;
+      for (const method of ['put', 'add'] as const) {
+        const write = words[method].bind(words);
+        words[method] = (value: unknown, key?: IDBValidKey) => {
+          attempted.push(method);
+          if (method === failingMethod && (value as DatedEntry).word === 'failure')
+            throw new DOMException('Synthetic synchronous write failure', 'QuotaExceededError');
+          return write(value, key);
+        };
+      }
+    }));
+    const store = createWordStore({ name: 'sync-overwrite', indexedDB: factory });
+    t.after(() => store.close());
+    const existing = await store.save({ ...sample, word: 'existing' });
+    const unrelated = await store.save({ ...sample, word: 'unrelated' });
+    const failed = failingMethod === 'put' ? await store.save({ ...sample, word: 'failure' }) : undefined;
+    const before = await store.list();
+    const values = [dated('existing'), dated('new'), dated('failure')];
+    fail = true;
+    await assert.rejects(store.importEntries(values, { overwriteExisting: true }), {
+      name: 'MessageError', detail: { code: 'storageQuota' },
+    });
+    assert.deepEqual(attempted, ['put', 'add', failingMethod]);
+    assert.deepEqual(await store.list(), before);
+    await store.close();
+    assert.deepEqual(await store.list(), before);
+    fail = false;
+    assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), {
+      imported: failed ? 1 : 2, updated: failed ? 2 : 1, skipped: 0,
+    });
+    const restored = await store.list();
+    assert.deepEqual(restored, failed ? [
+      { ...dated('new'), id: 4 }, { ...dated('failure'), id: failed.id }, unrelated, { ...dated('existing'), id: existing.id },
+    ] : [
+      { ...dated('failure'), id: 4 }, { ...dated('new'), id: 3 }, unrelated, { ...dated('existing'), id: existing.id },
+    ]);
+  });
+
+  test(`an asynchronous ${failingMethod} constraint failure rolls back successful puts and adds instead of counting a skipped word`, async t => {
+    const factory = new IDBFactory();
+    let fail = false;
+    const succeeded: string[] = [];
+    const errors: string[] = [];
+    observeConnections(factory, db => interceptWrites(db, words => {
+      if (!fail) return;
+      for (const method of ['put', 'add'] as const) {
+        const write = words[method].bind(words);
+        words[method] = (value: unknown, key?: IDBValidKey) => {
+          const entry = value as DatedEntry;
+          const conflict = method === failingMethod && entry.word === 'failure';
+          // add collides on the primary key; put collides on the unique word index at a different ID.
+          const injected = conflict ? { ...entry, ...(method === 'put' ? { word: 'existing' } : { id: 1 }) } : value;
+          const request = write(injected, key);
+          request.addEventListener('success', () => { succeeded.push(method); });
+          request.addEventListener('error', () => { errors.push(request.error?.name ?? ''); });
+          return request;
+        };
+      }
+    }));
+    const store = createWordStore({ name: 'constraint-overwrite', indexedDB: factory });
+    t.after(() => store.close());
+    const existing = await store.save({ ...sample, word: 'existing' });
+    const unrelated = await store.save({ ...sample, word: 'unrelated' });
+    const failed = failingMethod === 'put' ? await store.save({ ...sample, word: 'failure' }) : undefined;
+    const before = await store.list();
+    const values = [dated('existing'), dated('new'), dated('failure')];
+    fail = true;
+    await assert.rejects(store.importEntries(values, { overwriteExisting: true }), {
+      name: 'MessageError', detail: { code: 'storageConstraint' },
+    });
+    assert.deepEqual(succeeded, ['put', 'add']);
+    assert.deepEqual(errors, ['ConstraintError']);
+    assert.deepEqual(await store.list(), before);
+    await store.close();
+    assert.deepEqual(await store.list(), before);
+    fail = false;
+    assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), {
+      imported: failed ? 1 : 2, updated: failed ? 2 : 1, skipped: 0,
+    });
+    assert.deepEqual(await store.list(), failed ? [
+      { ...dated('new'), id: 4 }, { ...dated('failure'), id: failed.id }, unrelated, { ...dated('existing'), id: existing.id },
+    ] : [
+      { ...dated('failure'), id: 4 }, { ...dated('new'), id: 3 }, unrelated, { ...dated('existing'), id: existing.id },
+    ]);
+  });
+}
 
 test('transaction aborts after successful requests still reject and roll back atomically, allowing retries', async t => {
   const factory = new IDBFactory();
@@ -354,7 +740,7 @@ test('transaction aborts after successful requests still reject and roll back at
   await assert.rejects(store.save(createEntry('saved-request')), /中止/);
   assert.equal(succeeded, 3);
   assert.deepEqual(await store.list(), [existing]);
-  assert.deepEqual(await store.importEntries([dated('first'), dated('second')]), { imported: 2, skipped: 0 });
+  assert.deepEqual(await store.importEntries([dated('first'), dated('second')]), { imported: 2, updated: 0, skipped: 0 });
   assert.deepEqual((await store.list()).map(entry => entry.id), [3, 2, 1]);
 });
 
@@ -432,7 +818,7 @@ test('unexpected primary-key ConstraintError is not treated as a duplicate word 
   assert.equal(succeeded, 1);
   assert.deepEqual(await store.list(), [existing]);
   inject = false;
-  assert.deepEqual(await store.importEntries([dated('first'), dated('conflict')]), { imported: 2, skipped: 0 });
+  assert.deepEqual(await store.importEntries([dated('first'), dated('conflict')]), { imported: 2, updated: 0, skipped: 0 });
 });
 
 test('synchronous quota errors fail helpfully and roll back without affecting later writes', async t => {
