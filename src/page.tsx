@@ -47,6 +47,7 @@ export default function Home() {
     [operation, setOperation] = useState<Operation>(''),
     [error, setError] = useState<Message | null>(null),
     [notice, setNotice] = useState<Message | null>(null);
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
   const active = useRef(false);
   const ready = useRef(false);
   const operationLock = useRef<Operation>('');
@@ -380,14 +381,14 @@ export default function Home() {
     }
   }
 
-  async function importBackup(file: File) {
+  async function importBackup(file: File, overwriteExisting: boolean) {
     if (!beginOperation('import')) return;
     try {
       if (file.size > MAX_BACKUP_BYTES) throw new MessageError({ code: 'importFileTooLarge' });
       const entries = parseBackup(await file.text());
-      const result = await store.importEntries(entries);
+      const result = await store.importEntries(entries, { overwriteExisting });
       if (!active.current) return;
-      setNotice({ code: 'imported', params: { imported: result.imported, skipped: result.skipped } });
+      setNotice({ code: 'imported', params: result });
       await refresh(true);
     } catch (error) {
       if (active.current) setError({ code: 'importFailed', params: { reason: errorMessage(error) } });
@@ -686,7 +687,19 @@ export default function Home() {
             </div>
             <section className="import-backup" aria-labelledby="import-title">
               <h2 id="import-title" ref={importHeading} tabIndex={-1}>{text.importBackup}</h2>
-              <p className="backup-note">{text.importNote}</p>
+              <label className="import-option">
+                <input
+                  type="checkbox"
+                  checked={overwriteExisting}
+                  disabled={!!operation || !storeReady}
+                  aria-describedby="import-note"
+                  onChange={(event) => {
+                    if (!operationLock.current) setOverwriteExisting(event.target.checked);
+                  }}
+                />
+                <span>{text.overwriteExisting}</span>
+              </label>
+              <p id="import-note" className="backup-note">{overwriteExisting ? text.importOverwriteNote : text.importNote}</p>
               <button className="secondary" disabled={!!operation || !storeReady}
                 onClick={() => fileInput.current?.click()}>
                 {operation === 'import' ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />}
@@ -701,7 +714,7 @@ export default function Home() {
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   event.target.value = '';
-                  if (file) void importBackup(file);
+                  if (file) void importBackup(file, overwriteExisting);
                 }}
               />
             </section>
