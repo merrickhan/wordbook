@@ -244,7 +244,7 @@ test('legacy cleanup preserves persisted IDs, descending order, all entry fields
   // Start above ID 1 so rebuilding the notebook with fresh IDs cannot pass unnoticed.
   const seed = await store.save({ ...sample, word: 'temporary' });
   await store.remove(seed.id);
-  assert.deepEqual(await store.importEntries(values), { imported: 2, skipped: 0 });
+  assert.deepEqual(await store.importEntries(values), { imported: 2, updated: 0, skipped: 0 });
   const before = await store.list();
   assert.deepEqual(before, values.map((value, index) => ({ ...value, id: index + 2 })).reverse());
   const backup = serializeBackup(before, exportedAt);

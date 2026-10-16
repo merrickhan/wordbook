@@ -177,14 +177,29 @@ test('deletion labels, confirmation and structured feedback preserve the word in
   assert.match(formatMessage('en', { code: 'operationBusy' }), /delete/);
 });
 
-test('import counts use independent English plurals for zero, one and many', () => {
+test('import options distinguish default skipping from full replacement in both locales', () => {
+  assert.equal(ui['zh-CN'].overwriteExisting, '覆盖已有单词');
+  assert.equal(ui.en.overwriteExisting, 'Overwrite existing words');
+  assert.match(ui['zh-CN'].importNote, /跳过同名词.*不覆盖/);
+  assert.match(ui.en.importNote, /skips existing words.*without replacing/);
+  assert.match(ui['zh-CN'].importOverwriteNote, /全部内容及创建时间.*空字段.*其他单词保留/);
+  assert.match(ui.en.importOverwriteNote, /all fields and creation dates.*empty fields.*Other words stay/);
+  assert.match(ui['zh-CN'].importOverwriteNote, /无法撤销.*先导出备份/);
+  assert.match(ui.en.importOverwriteNote, /cannot be undone.*Export a backup first/);
+});
+
+test('import additions, replacements and skips use independent English plurals for zero, one and many', () => {
   for (const imported of [0, 1, 7]) {
-    for (const skipped of [0, 1, 3]) {
-      const message: Message = { code: 'imported', params: { imported, skipped } };
-      assert.equal(formatMessage('zh-CN', message),
-        `已导入 ${imported} 个单词，跳过 ${skipped} 个重复词。已有内容未覆盖。`);
-      assert.equal(formatMessage('en', message),
-        `Imported ${imported} ${imported === 1 ? 'word' : 'words'} and skipped ${skipped} ${skipped === 1 ? 'duplicate' : 'duplicates'}. Existing entries were not replaced.`);
+    for (const updated of [0, 1, 5]) {
+      for (const skipped of [0, 1, 3]) {
+        const message: Message = { code: 'imported', params: { imported, updated, skipped } };
+        const before = structuredClone(message);
+        assert.equal(formatMessage('zh-CN', message),
+          `已新增 ${imported} 个单词，覆盖 ${updated} 个单词，跳过 ${skipped} 个重复词。`);
+        assert.equal(formatMessage('en', message),
+          `Added ${imported} ${imported === 1 ? 'word' : 'words'}, overwrote ${updated} ${updated === 1 ? 'word' : 'words'}, and skipped ${skipped} ${skipped === 1 ? 'duplicate' : 'duplicates'}.`);
+        assert.deepEqual(message, before);
+      }
     }
   }
 });

@@ -217,12 +217,15 @@ export function createWordStore(options: StoreOptions) {
     });
   }
 
-  async function importEntries(values: readonly DatedEntry[]): Promise<{ imported: number; skipped: number }> {
+  async function importEntries(
+    values: readonly DatedEntry[],
+    { overwriteExisting = false }: { overwriteExisting?: boolean } = {},
+  ): Promise<{ imported: number; updated: number; skipped: number }> {
     if (!Array.isArray(values)) throw new MessageError({ code: 'importEntriesInvalid' });
     // Validate the entire batch, including duplicates, before starting a single readwrite transaction.
     const entries = Array.from(values, validateDatedEntry);
     return transact('readwrite', (words, watch, result) => {
-      const counts = { imported: 0, skipped: 0 };
+      const counts = { imported: 0, updated: 0, skipped: 0 };
       const seen = new Set<string>();
       const index = words.index('word');
       result(counts);
@@ -233,8 +236,12 @@ export function createWordStore(options: StoreOptions) {
         }
         seen.add(entry.word);
         watch(index.getKey(entry.word), existing => {
-          if (existing !== undefined) counts.skipped++;
-          else watch(words.add(entry), () => counts.imported++);
+          if (existing === undefined) watch(words.add(entry), () => counts.imported++);
+          else if (overwriteExisting === true) {
+            if (typeof existing !== 'number' || !Number.isSafeInteger(existing) || existing <= 0)
+              throw new MessageError({ code: 'storageInvalidId' });
+            watch(words.put({ ...entry, id: existing }), () => counts.updated++);
+          } else counts.skipped++;
         });
       }
     });

@@ -657,7 +657,7 @@ test('library views, navigation and rating edits leave exact IndexedDB v1 record
     entry(4, { word: 'gamma', translation: 'Outside the filter; é; 日本語' }),
   ];
   const dated = expected.map(({ id: _id, ...value }) => value);
-  assert.deepEqual(await store.importEntries(dated), { imported: 4, skipped: 0 });
+  assert.deepEqual(await store.importEntries(dated), { imported: 4, updated: 0, skipped: 0 });
   const entries = await store.list();
   const original = structuredClone(entries);
   const before = await databaseSnapshot(factory, name);
