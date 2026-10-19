@@ -3,12 +3,16 @@ import test from 'node:test';
 import { IDBFactory, IDBKeyRange, IDBVersionChangeEvent, forceCloseDatabase } from 'fake-indexeddb';
 import { createEntry, sample } from '../src/entry';
 import type { DatedEntry } from '../src/entry';
+import type { ImportBatch } from '../src/categories';
 import { MessageError } from '../src/messages';
 import { createWordStore, databaseName } from '../src/storage';
 
 const created = '2026-09-28T08:00:00.000Z';
 const earlier = '2024-02-29T12:34:56.789Z';
 const dated = (word: string): DatedEntry => ({ ...createEntry(word), created: earlier });
+const batch = (entries: readonly DatedEntry[]): ImportBatch => ({
+  categories: [], entries: entries.map(entry => ({ ...entry, categories: [] })),
+});
 
 function observeConnections(factory: IDBFactory, observe: (db: IDBDatabase) => void) {
   const open = factory.open.bind(factory);
@@ -76,8 +80,8 @@ test('saving uses seven fields and an injected time, lists in reverse order and 
   const store = createWordStore({ name: 'save', indexedDB: factory, now: () => new Date(created) });
   t.after(() => store.close());
   assert.deepEqual(await store.list(), []);
-  const first = await store.save({ ...sample, word: ' APPLE ', id: 700, created: 'bad date', extra: 'ignored' });
-  assert.deepEqual(first, { ...sample, word: 'apple', id: 1, created });
+  const first = await store.save({ ...sample, word: ' APPLE ', categoryIds: [], id: 700, created: 'bad date', extra: 'ignored' });
+  assert.deepEqual(first, { ...sample, word: 'apple', categoryIds: [], id: 1, created });
   const second = await store.save(createEntry('Banana'));
   assert.equal(second.id, 2);
   await assert.rejects(store.save({ ...sample, word: ' Apple ', translation: '不能覆盖' }), /apple.*原词条已保留/);
@@ -145,7 +149,7 @@ test('deleting missing or already deleted IDs is idempotent, and the maximum saf
   }
 });
 
-test('dual-accent, single-accent and legacy IPA survive reopening without dictionary preferences in database names or v1 records', async t => {
+test('dual-accent, single-accent and legacy IPA survive reopening without dictionary preferences in database names or v2 records', async t => {
   const factory = new IDBFactory();
   const name = databaseName('https://example.test/wordbook/');
   const store = createWordStore({ name, indexedDB: factory, now: () => new Date(created) });
@@ -155,15 +159,15 @@ test('dual-accent, single-accent and legacy IPA survive reopening without dictio
     ['american', 'US /təˈmeɪ.toʊ/'],
     ['british', 'UK /təˈmɑː.təʊ/'],
     ['legacy', sample.phonetic],
-  ].map(([word, phonetic], index) => ({ ...sample, word, phonetic, created, id: index + 1 }));
+  ].map(([word, phonetic], index) => ({ ...sample, word, phonetic, created, categoryIds: [], id: index + 1 }));
   for (const { id, created: _created, ...value } of expected) {
     const saved = await store.save({ ...value, provider: 'english-dictionary', dictionaryProvider: 'free-dictionary' });
-    assert.deepEqual(saved, { ...value, created, id });
+    assert.deepEqual(saved, { ...value, created, categoryIds: [], id });
   }
   await store.close();
   assert.deepEqual(await store.list(), [...expected].reverse());
-  assert.deepEqual(await factory.databases(), [{ name: 'wordbook:/wordbook/', version: 1 }]);
-  const db = await openDatabase(factory, name, 1);
+  assert.deepEqual(await factory.databases(), [{ name: 'wordbook:/wordbook/', version: 2 }]);
+  const db = await openDatabase(factory, name, 2);
   t.after(() => db.close());
   const read = db.transaction('words').objectStore('words').getAll();
   const raw = await new Promise<unknown>((resolve, reject) => {
@@ -173,15 +177,21 @@ test('dual-accent, single-accent and legacy IPA survive reopening without dictio
   assert.deepEqual(raw, expected);
 });
 
-test('database v1 contains only the words store with an auto-incrementing id and a unique word index', async t => {
+test('database v2 retains the words schema and adds an independent uniquely named category directory', async t => {
   const factory = new IDBFactory();
   const store = createWordStore({ name: 'schema', indexedDB: factory });
   t.after(() => store.close());
   await store.list();
-  const db = await openDatabase(factory, 'schema', 1);
+  const db = await openDatabase(factory, 'schema', 2);
   t.after(() => db.close());
-  assert.equal(db.version, 1);
-  assert.deepEqual([...db.objectStoreNames], ['words']);
+  assert.equal(db.version, 2);
+  assert.deepEqual([...db.objectStoreNames], ['categories', 'words']);
+  const categories = db.transaction('categories').objectStore('categories');
+  assert.equal(categories.keyPath, 'id');
+  assert.equal(categories.autoIncrement, true);
+  assert.deepEqual([...categories.indexNames], ['normalizedName']);
+  assert.equal(categories.index('normalizedName').keyPath, 'normalizedName');
+  assert.equal(categories.index('normalizedName').unique, true);
   const words = db.transaction('words').objectStore('words');
   assert.equal(words.keyPath, 'id');
   assert.equal(words.autoIncrement, true);
@@ -277,20 +287,20 @@ test('imports default to preserving existing words and the first file occurrence
   t.after(() => store.close());
   const existing = await store.save({ ...sample, word: 'apple' });
   const values = [
-    { ...dated('apple'), translation: '不应覆盖', id: 80 },
-    { ...dated('banana'), word: ' BANANA ', translation: '首条', id: 99 },
+    { ...dated('apple'), translation: '不应覆盖', categoryIds: [], id: 80 },
+    { ...dated('banana'), word: ' BANANA ', translation: '首条', categoryIds: [], id: 99 },
     { ...dated('banana'), translation: '后条' },
-    { ...dated('cherry'), id: 600 },
+    { ...dated('cherry'), categoryIds: [], id: 600 },
     dated('apple'),
   ];
-  assert.deepEqual(await store.importEntries(values), { imported: 2, updated: 0, skipped: 3 });
+  assert.deepEqual(await store.importEntries(batch(values)), { classified: 0, categoriesCreated: 0, imported: 2, updated: 0, skipped: 3 });
   assert.deepEqual(await store.list(), [
-    { ...dated('cherry'), id: 3 },
-    { ...dated('banana'), translation: '首条', id: 2 },
+    { ...dated('cherry'), categoryIds: [], id: 3 },
+    { ...dated('banana'), translation: '首条', categoryIds: [], id: 2 },
     existing,
   ]);
-  assert.deepEqual(await store.importEntries(values), { imported: 0, updated: 0, skipped: 5 });
-  assert.deepEqual(await store.importEntries([]), { imported: 0, updated: 0, skipped: 0 });
+  assert.deepEqual(await store.importEntries(batch(values)), { classified: 0, categoriesCreated: 0, imported: 0, updated: 0, skipped: 5 });
+  assert.deepEqual(await store.importEntries(batch([])), { classified: 0, categoriesCreated: 0, imported: 0, updated: 0, skipped: 0 });
 });
 
 test('empty options, explicit false and non-boolean truthy values never enable overwriting', async t => {
@@ -302,13 +312,13 @@ test('empty options, explicit false and non-boolean truthy values never enable o
     dated('new'),
     { ...dated('new'), word: ' NEW ', translation: 'Later duplicate' },
   ];
-  assert.deepEqual(await store.importEntries(values, { overwriteExisting: false }), { imported: 1, updated: 0, skipped: 2 });
-  const expected = [{ ...dated('new'), id: 2 }, existing];
+  assert.deepEqual(await store.importEntries(batch(values), { overwriteExisting: false }), { classified: 0, categoriesCreated: 0, imported: 1, updated: 0, skipped: 2 });
+  const expected = [{ ...dated('new'), categoryIds: [], id: 2 }, existing];
   assert.deepEqual(await store.list(), expected);
-  assert.deepEqual(await store.importEntries(values, {}), { imported: 0, updated: 0, skipped: 3 });
+  assert.deepEqual(await store.importEntries(batch(values), {}), { classified: 0, categoriesCreated: 0, imported: 0, updated: 0, skipped: 3 });
   for (const value of [undefined, false, null, 0, 1, 'true', {}, []]) {
-    assert.deepEqual(await store.importEntries(values, { overwriteExisting: value as boolean }), {
-      imported: 0, updated: 0, skipped: 3,
+    assert.deepEqual(await store.importEntries(batch(values), { overwriteExisting: value as boolean }), {
+      classified: 0, categoriesCreated: 0, imported: 0, updated: 0, skipped: 3,
     });
     assert.deepEqual(await store.list(), expected);
   }
@@ -334,39 +344,39 @@ test('overwrite replaces all fields and dates, clears blanks and keeps IDs, orde
   const first: DatedEntry = { ...dated('new first'), translation: 'First occurrence wins', created: '2020-01-01T00:00:00.000Z' };
   const last = { ...dated('new last'), created: '2025-01-01T00:00:00.000Z' };
   const values = Object.freeze([
-    { ...replacement, word: ' ALPHA ', phonetic: ` ${replacement.phonetic} `, translation: ` ${replacement.translation} `, id: unrelated.id, extra: { ignore: true } },
-    { ...first, word: ' NEW FIRST ', id: original.id, extra: 'ignored' },
+    { ...replacement, word: ' ALPHA ', phonetic: ` ${replacement.phonetic} `, translation: ` ${replacement.translation} `, categoryIds: [], id: unrelated.id, extra: { ignore: true } },
+    { ...first, word: ' NEW FIRST ', categoryIds: [], id: original.id, extra: 'ignored' },
     { ...dated('alpha'), translation: 'Later existing-word duplicate must not win' },
-    { ...blank, phonetic: ' \t', translation: '　', pos: ' ', definition: '\n', example: '\r\n', source: ' \t　', id: -1 },
-    { ...identical, id: 9999, dictionaryProvider: 'ignored' },
+    { ...blank, phonetic: ' \t', translation: '　', pos: ' ', definition: '\n', example: '\r\n', source: ' \t　', categoryIds: [], id: -1 },
+    { ...identical, categoryIds: [], id: 9999, dictionaryProvider: 'ignored' },
     { ...dated('new first'), translation: 'Later new-word duplicate must not win' },
-    { ...last, id: 600 },
+    { ...last, categoryIds: [], id: 600 },
   ].map(value => Object.freeze(value)));
   const input = structuredClone(values);
   const expected = [
-    { ...last, id: 7 }, { ...first, id: 6 }, identical,
-    { ...blank, id: cleared.id }, unrelated, { ...replacement, id: original.id },
+    { ...last, categoryIds: [], id: 7 }, { ...first, categoryIds: [], id: 6 }, identical,
+    { ...blank, categoryIds: [], id: cleared.id }, unrelated, { ...replacement, categoryIds: [], id: original.id },
   ];
   for (const counts of [
-    { imported: 2, updated: 3, skipped: 2 },
-    { imported: 0, updated: 5, skipped: 2 },
+    { classified: 0, categoriesCreated: 0, imported: 2, updated: 3, skipped: 2 },
+    { classified: 0, categoriesCreated: 0, imported: 0, updated: 5, skipped: 2 },
   ]) {
-    const result = await store.importEntries(values, { overwriteExisting: true });
+    const result = await store.importEntries(batch(values), { overwriteExisting: true });
     assert.deepEqual(result, counts);
     assert.equal(result.imported + result.updated + result.skipped, values.length);
     assert.deepEqual(await store.list(), expected);
     assert.deepEqual(values, input);
   }
   for (const overwriteExisting of [false, true]) {
-    assert.deepEqual(await store.importEntries([], { overwriteExisting }), { imported: 0, updated: 0, skipped: 0 });
+    assert.deepEqual(await store.importEntries(batch([]), { overwriteExisting }), { classified: 0, categoriesCreated: 0, imported: 0, updated: 0, skipped: 0 });
     assert.deepEqual(await store.list(), expected);
   }
   await store.close();
   const reopened = createWordStore({ name, indexedDB: factory });
   t.after(() => reopened.close());
   assert.deepEqual(await reopened.list(), expected);
-  assert.deepEqual(await factory.databases(), [{ name, version: 1 }]);
-  const db = await openDatabase(factory, name, 1);
+  assert.deepEqual(await factory.databases(), [{ name, version: 2 }]);
+  const db = await openDatabase(factory, name, 2);
   t.after(() => db.close());
   const request = db.transaction('words').objectStore('words').getAll();
   const raw = await new Promise<unknown>((resolve, reject) => {
@@ -407,7 +417,7 @@ test('overwrite uses one readwrite transaction and publishes completed add and p
   t.after(() => store.close());
   await store.save(createEntry('existing'));
   observing = true;
-  const counts = await store.importEntries([dated('existing'), dated('new'), dated('new')], { overwriteExisting: true }).then(result => {
+  const counts = await store.importEntries(batch([dated('existing'), dated('new'), dated('new')]), { overwriteExisting: true }).then(result => {
     events.push('resolved');
     return result;
   });
@@ -415,7 +425,7 @@ test('overwrite uses one readwrite transaction and publishes completed add and p
   assert.deepEqual(modes, ['readwrite']);
   assert.deepEqual(events.slice(0, 2).sort(), ['add', 'put']);
   assert.deepEqual(events.slice(2), ['commit', 'resolved']);
-  assert.deepEqual(counts, { imported: 1, updated: 1, skipped: 1 });
+  assert.deepEqual(counts, { classified: 0, categoriesCreated: 0, imported: 1, updated: 1, skipped: 1 });
 });
 
 for (const connection of ['cold', 'warm']) {
@@ -427,10 +437,10 @@ for (const connection of ['cold', 'warm']) {
       if (connection === 'cold') await store.close();
       const replacement = { ...dated('existing'), translation: 'Snapshot replacement' };
       const options = { overwriteExisting };
-      const pending = store.importEntries([replacement], options);
+      const pending = store.importEntries(batch([replacement]), options);
       options.overwriteExisting = !overwriteExisting;
-      assert.deepEqual(await pending, { imported: 0, updated: Number(overwriteExisting), skipped: Number(!overwriteExisting) });
-      assert.deepEqual(await store.list(), [overwriteExisting ? { ...replacement, id: original.id } : original]);
+      assert.deepEqual(await pending, { classified: 0, categoriesCreated: 0, imported: 0, updated: Number(overwriteExisting), skipped: Number(!overwriteExisting) });
+      assert.deepEqual(await store.list(), [overwriteExisting ? { ...replacement, categoryIds: [], id: original.id } : original]);
     });
   }
 }
@@ -441,8 +451,8 @@ test('concurrent imports check duplicates within the same read-write transaction
   const right = createWordStore({ name: 'concurrent-import', indexedDB: factory });
   t.after(() => Promise.all([left.close(), right.close()]));
   const results = await Promise.all([
-    left.importEntries([dated('shared'), dated('left')]),
-    right.importEntries([dated('shared'), dated('right')]),
+    left.importEntries(batch([dated('shared'), dated('left')])),
+    right.importEntries(batch([dated('shared'), dated('right')])),
   ]);
   assert.equal(results.reduce((total, value) => total + value.imported, 0), 3);
   assert.equal(results.reduce((total, value) => total + value.updated, 0), 0);
@@ -466,19 +476,19 @@ test('concurrent overlapping overwrite imports serialize both existing and newly
     { ...dated('overlap'), source: `${side} ignored later occurrence` },
   ]);
   const results = await Promise.all([
-    left.importEntries(batches[0], { overwriteExisting: true }),
-    right.importEntries(batches[1], { overwriteExisting: true }),
+    left.importEntries(batch(batches[0]), { overwriteExisting: true }),
+    right.importEntries(batch(batches[1]), { overwriteExisting: true }),
   ]);
   const first = results.findIndex(result => result.imported === 2);
   assert.notEqual(first, -1);
   const second = 1 - first;
-  assert.deepEqual(results[first], { imported: 2, updated: 1, skipped: 1 });
-  assert.deepEqual(results[second], { imported: 1, updated: 2, skipped: 1 });
+  assert.deepEqual(results[first], { classified: 0, categoriesCreated: 0, imported: 2, updated: 1, skipped: 1 });
+  assert.deepEqual(results[second], { classified: 0, categoriesCreated: 0, imported: 1, updated: 2, skipped: 1 });
   for (const result of results) assert.equal(result.imported + result.updated + result.skipped, 4);
   const expected = [
-    { ...batches[second][2], id: 5 }, { ...batches[first][2], id: 4 },
-    { ...batches[second][1], word: 'overlap', id: 3 }, unrelated,
-    { ...batches[second][0], word: 'shared', id: shared.id },
+    { ...batches[second][2], categoryIds: [], id: 5 }, { ...batches[first][2], categoryIds: [], id: 4 },
+    { ...batches[second][1], word: 'overlap', categoryIds: [], id: 3 }, unrelated,
+    { ...batches[second][0], word: 'shared', categoryIds: [], id: shared.id },
   ];
   assert.deepEqual(await left.list(), expected);
   assert.deepEqual(await right.list(), expected);
@@ -509,15 +519,15 @@ for (const overwriteExisting of [false, true]) {
       sparse, new Array<DatedEntry>(1),
     ]) {
       const before = transactions;
-      await assert.rejects(store.importEntries(values as unknown as DatedEntry[], { overwriteExisting }));
+      await assert.rejects(store.importEntries(batch(values as unknown as DatedEntry[]), { overwriteExisting }));
       assert.equal(transactions, before, 'Do not begin a transaction until every record, including duplicates and holes, is valid');
       assert.deepEqual(await store.list(), [original]);
     }
-    assert.deepEqual(await store.importEntries([replacement, dated('valid')], { overwriteExisting }), {
-      imported: 1, updated: Number(overwriteExisting), skipped: Number(!overwriteExisting),
+    assert.deepEqual(await store.importEntries(batch([replacement, dated('valid')]), { overwriteExisting }), {
+      classified: 0, categoriesCreated: 0, imported: 1, updated: Number(overwriteExisting), skipped: Number(!overwriteExisting),
     });
     assert.deepEqual(await store.list(), [
-      { ...dated('valid'), id: 2 }, overwriteExisting ? { ...replacement, id: original.id } : original,
+      { ...dated('valid'), categoryIds: [], id: 2 }, overwriteExisting ? { ...replacement, categoryIds: [], id: original.id } : original,
     ]);
   });
 }
@@ -530,7 +540,7 @@ test('overwrite rejects non-positive, unsafe and non-numeric existing IDs withou
     const store = createWordStore({ name, indexedDB: factory });
     t.after(() => store.close());
     await store.save({ ...sample, word: 'existing' });
-    const db = await openDatabase(factory, name, 1);
+    const db = await openDatabase(factory, name, 2);
     t.after(() => db.close());
     const transaction = db.transaction('words', 'readwrite');
     transaction.objectStore('words').add({ ...dated('corrupt'), id });
@@ -544,7 +554,7 @@ test('overwrite rejects non-positive, unsafe and non-numeric existing IDs withou
       request.onerror = () => reject(request.error);
     });
     const before = await readRaw();
-    await assert.rejects(store.importEntries([dated('existing'), dated('new'), dated('corrupt')], { overwriteExisting: true }), {
+    await assert.rejects(store.importEntries(batch([dated('existing'), dated('new'), dated('corrupt')]), { overwriteExisting: true }), {
       name: 'MessageError', detail: { code: 'storageInvalidId' },
     });
     assert.deepEqual(await readRaw(), before);
@@ -559,21 +569,21 @@ test('overwrite preserves a maximum-safe-integer existing ID instead of using th
   const store = createWordStore({ name, indexedDB: factory });
   t.after(() => store.close());
   const unrelated = await store.save(createEntry('unrelated'));
-  const db = await openDatabase(factory, name, 1);
+  const db = await openDatabase(factory, name, 2);
   t.after(() => db.close());
   const transaction = db.transaction('words', 'readwrite');
-  transaction.objectStore('words').add({ ...dated('boundary'), id: Number.MAX_SAFE_INTEGER });
+  transaction.objectStore('words').add({ ...dated('boundary'), categoryIds: [], id: Number.MAX_SAFE_INTEGER });
   await new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => resolve();
     transaction.onabort = () => reject(transaction.error);
   });
   const replacement = { ...dated('boundary'), translation: 'Replace at the same safe key', created };
-  const values = [{ ...replacement, id: unrelated.id }];
-  assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), {
-    imported: 0, updated: 1, skipped: 0,
+  const values = [{ ...replacement, categoryIds: [], id: unrelated.id }];
+  assert.deepEqual(await store.importEntries(batch(values), { overwriteExisting: true }), {
+    classified: 0, categoriesCreated: 0, imported: 0, updated: 1, skipped: 0,
   });
   await store.close();
-  assert.deepEqual(await store.list(), [{ ...replacement, id: Number.MAX_SAFE_INTEGER }, unrelated]);
+  assert.deepEqual(await store.list(), [{ ...replacement, categoryIds: [], id: Number.MAX_SAFE_INTEGER }, unrelated]);
 });
 
 test('an abort after successful put and add requests rolls both back, survives reopening and permits a complete retry', async t => {
@@ -603,7 +613,7 @@ test('an abort after successful put and add requests rolls both back, survives r
   const unrelated = await store.save({ ...sample, word: 'unrelated' });
   const values = [dated('existing'), dated('first'), dated('second')];
   abort = true;
-  await assert.rejects(store.importEntries(values, { overwriteExisting: true }), {
+  await assert.rejects(store.importEntries(batch(values), { overwriteExisting: true }), {
     name: 'MessageError', detail: { code: 'storageAborted' },
   });
   assert.deepEqual(succeeded, ['put', 'add']);
@@ -611,9 +621,9 @@ test('an abort after successful put and add requests rolls both back, survives r
   assert.deepEqual(await store.list(), [unrelated, existing]);
   await store.close();
   assert.deepEqual(await store.list(), [unrelated, existing]);
-  assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), { imported: 2, updated: 1, skipped: 0 });
+  assert.deepEqual(await store.importEntries(batch(values), { overwriteExisting: true }), { classified: 0, categoriesCreated: 0, imported: 2, updated: 1, skipped: 0 });
   assert.deepEqual(await store.list(), [
-    { ...dated('second'), id: 4 }, { ...dated('first'), id: 3 }, unrelated, { ...dated('existing'), id: existing.id },
+    { ...dated('second'), categoryIds: [], id: 4 }, { ...dated('first'), categoryIds: [], id: 3 }, unrelated, { ...dated('existing'), categoryIds: [], id: existing.id },
   ]);
 });
 
@@ -642,7 +652,7 @@ for (const failingMethod of ['put', 'add'] as const) {
     const before = await store.list();
     const values = [dated('existing'), dated('new'), dated('failure')];
     fail = true;
-    await assert.rejects(store.importEntries(values, { overwriteExisting: true }), {
+    await assert.rejects(store.importEntries(batch(values), { overwriteExisting: true }), {
       name: 'MessageError', detail: { code: 'storageQuota' },
     });
     assert.deepEqual(attempted, ['put', 'add', failingMethod]);
@@ -650,14 +660,14 @@ for (const failingMethod of ['put', 'add'] as const) {
     await store.close();
     assert.deepEqual(await store.list(), before);
     fail = false;
-    assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), {
-      imported: failed ? 1 : 2, updated: failed ? 2 : 1, skipped: 0,
+    assert.deepEqual(await store.importEntries(batch(values), { overwriteExisting: true }), {
+      classified: 0, categoriesCreated: 0, imported: failed ? 1 : 2, updated: failed ? 2 : 1, skipped: 0,
     });
     const restored = await store.list();
     assert.deepEqual(restored, failed ? [
-      { ...dated('new'), id: 4 }, { ...dated('failure'), id: failed.id }, unrelated, { ...dated('existing'), id: existing.id },
+      { ...dated('new'), categoryIds: [], id: 4 }, { ...dated('failure'), categoryIds: [], id: failed.id }, unrelated, { ...dated('existing'), categoryIds: [], id: existing.id },
     ] : [
-      { ...dated('failure'), id: 4 }, { ...dated('new'), id: 3 }, unrelated, { ...dated('existing'), id: existing.id },
+      { ...dated('failure'), categoryIds: [], id: 4 }, { ...dated('new'), categoryIds: [], id: 3 }, unrelated, { ...dated('existing'), categoryIds: [], id: existing.id },
     ]);
   });
 
@@ -690,7 +700,7 @@ for (const failingMethod of ['put', 'add'] as const) {
     const before = await store.list();
     const values = [dated('existing'), dated('new'), dated('failure')];
     fail = true;
-    await assert.rejects(store.importEntries(values, { overwriteExisting: true }), {
+    await assert.rejects(store.importEntries(batch(values), { overwriteExisting: true }), {
       name: 'MessageError', detail: { code: 'storageConstraint' },
     });
     assert.deepEqual(succeeded, ['put', 'add']);
@@ -699,13 +709,13 @@ for (const failingMethod of ['put', 'add'] as const) {
     await store.close();
     assert.deepEqual(await store.list(), before);
     fail = false;
-    assert.deepEqual(await store.importEntries(values, { overwriteExisting: true }), {
-      imported: failed ? 1 : 2, updated: failed ? 2 : 1, skipped: 0,
+    assert.deepEqual(await store.importEntries(batch(values), { overwriteExisting: true }), {
+      classified: 0, categoriesCreated: 0, imported: failed ? 1 : 2, updated: failed ? 2 : 1, skipped: 0,
     });
     assert.deepEqual(await store.list(), failed ? [
-      { ...dated('new'), id: 4 }, { ...dated('failure'), id: failed.id }, unrelated, { ...dated('existing'), id: existing.id },
+      { ...dated('new'), categoryIds: [], id: 4 }, { ...dated('failure'), categoryIds: [], id: failed.id }, unrelated, { ...dated('existing'), categoryIds: [], id: existing.id },
     ] : [
-      { ...dated('failure'), id: 4 }, { ...dated('new'), id: 3 }, unrelated, { ...dated('existing'), id: existing.id },
+      { ...dated('failure'), categoryIds: [], id: 4 }, { ...dated('new'), categoryIds: [], id: 3 }, unrelated, { ...dated('existing'), categoryIds: [], id: existing.id },
     ]);
   });
 }
@@ -733,14 +743,14 @@ test('transaction aborts after successful requests still reject and roll back at
   t.after(() => store.close());
   const existing = await store.save(createEntry('existing'));
   abortAfter = 2;
-  await assert.rejects(store.importEntries([dated('first'), dated('second'), dated('third')]), /中止/);
+  await assert.rejects(store.importEntries(batch([dated('first'), dated('second'), dated('third')])), /中止/);
   assert.equal(succeeded, 2);
   assert.deepEqual(await store.list(), [existing]);
   abortAfter = 1;
   await assert.rejects(store.save(createEntry('saved-request')), /中止/);
   assert.equal(succeeded, 3);
   assert.deepEqual(await store.list(), [existing]);
-  assert.deepEqual(await store.importEntries([dated('first'), dated('second')]), { imported: 2, updated: 0, skipped: 0 });
+  assert.deepEqual(await store.importEntries(batch([dated('first'), dated('second')])), { classified: 0, categoriesCreated: 0, imported: 2, updated: 0, skipped: 0 });
   assert.deepEqual((await store.list()).map(entry => entry.id), [3, 2, 1]);
 });
 
@@ -804,7 +814,7 @@ test('unexpected primary-key ConstraintError is not treated as a duplicate word 
     const add = words.add.bind(words);
     words.add = (value: unknown, key?: IDBValidKey) => {
       const entry = value as DatedEntry;
-      const request = add(inject && entry.word === 'conflict' ? { ...entry, id: 1 } : value, key);
+      const request = add(inject && entry.word === 'conflict' ? { ...entry, categoryIds: [], id: 1 } : value, key);
       request.addEventListener('success', () => { succeeded++; });
       return request;
     };
@@ -814,11 +824,11 @@ test('unexpected primary-key ConstraintError is not treated as a duplicate word 
   const existing = await store.save(createEntry('existing'));
   succeeded = 0;
   inject = true;
-  await assert.rejects(store.importEntries([dated('first'), dated('conflict')]), /约束冲突/);
+  await assert.rejects(store.importEntries(batch([dated('first'), dated('conflict')])), /约束冲突/);
   assert.equal(succeeded, 1);
   assert.deepEqual(await store.list(), [existing]);
   inject = false;
-  assert.deepEqual(await store.importEntries([dated('first'), dated('conflict')]), { imported: 2, updated: 0, skipped: 0 });
+  assert.deepEqual(await store.importEntries(batch([dated('first'), dated('conflict')])), { classified: 0, categoriesCreated: 0, imported: 2, updated: 0, skipped: 0 });
 });
 
 test('synchronous quota errors fail helpfully and roll back without affecting later writes', async t => {
@@ -893,7 +903,7 @@ test('blocked opens reject promptly, close late connections and still allow succ
   await assert.rejects(store.list(), /其他标签页占用/);
   assert.deepEqual(await store.list(), [original]);
   await store.close();
-  const upgraded = await openDatabase(factory, 'blocked', 2);
+  const upgraded = await openDatabase(factory, 'blocked', 3);
   upgraded.close();
 });
 
@@ -927,7 +937,7 @@ test('versionchange releases old connections and subsequent version mismatches e
   const store = createWordStore({ name: 'version', indexedDB: factory });
   t.after(() => store.close());
   const original = await store.save(sample);
-  const db = await openDatabase(factory, 'version', 2);
+  const db = await openDatabase(factory, 'version', 3);
   t.after(() => db.close());
   await assert.rejects(store.list(), /版本不兼容/);
   await assert.rejects(store.list(), /版本不兼容/);

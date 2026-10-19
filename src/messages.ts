@@ -10,9 +10,19 @@ export const defaultMessages = {
   backupTooManyEntries: '备份词条超过 10,000 条限制，无法导入或导出。',
   backupInvalidJson: '备份不是有效的 JSON 文件。',
   backupInvalidFormat: '备份格式无效，请选择 Wordbook 导出的 JSON 文件。',
-  backupInvalidStructure: '备份结构无效，必须包含 format、version、exportedAt 和 entries。',
+  backupInvalidStructure: '备份结构无效，请使用 Wordbook 导出的完整备份。',
   backupWrongFormat: '此文件不是 Wordbook 备份。',
-  backupUnsupportedVersion: '不支持此备份版本，请使用版本 1 的 Wordbook 备份。',
+  backupUnsupportedVersion: '不支持此备份版本，请使用版本 1 或 2 的 Wordbook 备份。',
+  invalidCategoryName: '分类名称需为 1–80 个字符，不能包含控制字符。',
+  invalidCategoryIds: '分类编号无效，请刷新词库后重试。',
+  tooManyCategories: '分类或分类引用超过 1,000 个限制。',
+  invalidCategories: '分类数据无效，包含重复名称或未声明的分类引用。',
+  duplicateCategory: '分类名称已存在，请使用已有分类或换一个名称。',
+  categoryMissing: '所选分类已不存在，请刷新词库后重试。',
+  invalidCategoryChange: '请选择有效的分类操作和目标分类。',
+  invalidImportBatch: '导入数据必须包含词条数组和分类目录。',
+  categorySaved: '分类已保存。',
+  categoryDeleted: '分类及其关联已移除，所有单词保留。',
   backupInvalidId: '词条编号无效，无法导出备份。',
   storageUnavailable: '无法访问或保存本地词库，请检查浏览器存储设置后重试。',
   storageQuota: '浏览器存储空间不足，未保存任何更改。请释放空间后重试。',
@@ -28,7 +38,7 @@ export const defaultMessages = {
   invalidClock: '无法获取有效的当前时间，请检查设备时间后重试。',
   storageInvalidId: '词条编号无效，无法操作本地词库。',
   importEntriesInvalid: '导入的词条必须是数组。',
-  operationBusy: '请等待当前保存、删除或备份操作完成。',
+  operationBusy: '请等待当前保存、删除、分类或备份操作完成。',
   manualInvalidWord: '请先输入有效的英语单词或短语（最多 80 个字符）。',
   storeNotReady: '生词本尚未打开，请先重新加载。',
   saved: '已保存到当前浏览器的生词本。',
@@ -42,8 +52,10 @@ export const defaultMessages = {
   phoneticOmitted: '部分音标过长，已完整省略；可核对来源后手动补充。',
   deleted: ({ word }: { word: string }) => `已从词本删除“${word}”。`,
   duplicateWord: ({ word }: { word: string }) => `“${word}” 已在词本中，原词条已保留。`,
-  imported: ({ imported, updated, skipped }: { imported: number; updated: number; skipped: number }) =>
-    `已新增 ${imported} 个单词，覆盖 ${updated} 个单词，跳过 ${skipped} 个重复词。`,
+  imported: ({ imported, updated, skipped, classified, categoriesCreated }: { imported: number; updated: number; skipped: number; classified: number; categoriesCreated: number }) =>
+    `已新增 ${imported} 个单词，覆盖 ${updated} 个单词的内容，跳过 ${skipped} 条内容；为 ${classified} 个单词新增分类关联，新建 ${categoriesCreated} 个分类。`,
+  categoriesUpdated: ({ changed, unchanged, missing }: { changed: number; unchanged: number; missing: number }) =>
+    `已修改 ${changed} 个单词的分类，${unchanged} 个无需修改，${missing} 个已不存在。`,
   loadFailed: (reason: string) => '无法读取生词本：' + reason,
   importFailed: (reason: string) => '导入失败：' + reason,
   deleteFailed: (reason: string) => '删除失败：' + reason,
@@ -56,7 +68,8 @@ type PlainCode = {
 export type Message =
   | { code: PlainCode }
   | { code: 'duplicateWord' | 'deleted'; params: { word: string } }
-  | { code: 'imported'; params: { imported: number; updated: number; skipped: number } }
+  | { code: 'imported'; params: { imported: number; updated: number; skipped: number; classified: number; categoriesCreated: number } }
+  | { code: 'categoriesUpdated'; params: { changed: number; unchanged: number; missing: number } }
   | { code: 'loadFailed' | 'importFailed' | 'deleteFailed'; params: { reason: Message } };
 
 export type MessageCatalog = {
@@ -68,6 +81,7 @@ export function renderMessage(catalog: MessageCatalog, message: Message): string
     case 'duplicateWord':
     case 'deleted': return catalog[message.code](message.params);
     case 'imported': return catalog.imported(message.params);
+    case 'categoriesUpdated': return catalog.categoriesUpdated(message.params);
     case 'loadFailed':
     case 'importFailed':
     case 'deleteFailed': return catalog[message.code](renderMessage(catalog, message.params.reason));

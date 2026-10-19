@@ -8,7 +8,7 @@ import { PracticePanel } from '../src/practice-panel';
 import type { ActivePractice, PracticeRating } from '../src/practice';
 
 const entry: StoredEntry = {
-  id: 1, word: 'apple', phonetic: 'US /synthetic/ · UK /synthetic/',
+  id: 1, categoryIds: [9417, 82391], word: 'apple', phonetic: 'US /synthetic/ · UK /synthetic/',
   translation: '合成答案', pos: 'Synthetic noun', definition: 'Synthetic definition',
   example: 'Synthetic example', created: '2024-02-29T12:34:56.789Z',
   source: 'FreeDictionaryAPI.com | Wiktionary: https://en.wiktionary.org/wiki/apple | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑',
@@ -68,6 +68,17 @@ for (const locale of ['zh-CN', 'en'] as const) {
     assert.equal(html.includes('practice-answer'), false);
     assert.match(button(html, text.previousWord), /disabled=""/);
     assert.match(button(html, text.nextWord), /disabled=""/);
+  });
+
+  test(`${locale} category membership never changes practice prompts, answers or summaries`, () => {
+    for (const state of [round, { ...round, progress: [{ revealed: true, rating: null }] },
+      { ...round, phase: 'summary' as const, progress: [{ revealed: true, rating: 'missed' as const }] }]) {
+      const categorized = render(state, locale);
+      const uncategorized = render({ ...state, cards: [{ ...entry, categoryIds: [] }] }, locale);
+      assert.equal(categorized, uncategorized);
+      for (const categoryId of entry.categoryIds) assert.equal(categorized.includes(String(categoryId)), false);
+      assert.doesNotMatch(categorized, /categoryIds|data-category|class="category/);
+    }
   });
 
   test(`${locale} navigation disables only the corresponding boundary and exposes the current word`, () => {

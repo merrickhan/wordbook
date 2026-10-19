@@ -1,3 +1,4 @@
+import type { CategoryFilter } from './categories';
 import type { StoredEntry } from './entry';
 
 export type LibrarySort = 'recent' | 'alphabetical';
@@ -8,10 +9,12 @@ export function selectLibraryEntries(
   entries: readonly StoredEntry[],
   query: string,
   sort: LibrarySort,
+  category: CategoryFilter = 'all',
 ): StoredEntry[] {
   const search = query.trim().toLowerCase();
   const selected = entries.filter(entry =>
-    entry.word.toLowerCase().includes(search) || entry.translation.toLowerCase().includes(search),
+    (category === 'all' || (category === 'uncategorized' ? entry.categoryIds.length === 0 : entry.categoryIds.includes(category)))
+    && (entry.word.toLowerCase().includes(search) || entry.translation.toLowerCase().includes(search)),
   );
   return selected.sort((left, right) =>
     (sort === 'alphabetical' ? alphabetical.compare(left.word, right.word) : 0) || right.id - left.id,

@@ -23,10 +23,14 @@ import { paginateLibraryEntries, selectLibraryEntries, type LibrarySort } from '
 import { eligiblePracticeEntries, initialPracticeState, practiceReducer, samplePracticeEntries } from './practice';
 import { PracticePanel } from './practice-panel';
 import { isPlainNavigation, readRoute, routeHash, routeUrl, type PageRoute } from './hash-route';
+import type { Category, CategoryChange, CategoryFilter, LibrarySnapshot } from './categories';
+import { CategoryPicker } from './category-picker';
+import { CategoryManager } from './category-manager';
 
 const dbNamespace = databaseName(window.location.href);
 const store = createWordStore({ name: dbNamespace });
-type Operation = '' | 'save' | 'delete' | 'import' | 'export';
+type Operation = '' | 'save' | 'delete' | 'import' | 'export' | 'category' | 'classify';
+type CategoryTarget = 'draft' | 'import' | 'bulk';
 type NavigationTarget = 'words' | 'add' | 'capture' | 'import' | 'practice-return';
 type NavigationIntent = { route: PageRoute; target: NavigationTarget; revision: number };
 
@@ -36,7 +40,7 @@ export default function Home() {
   const [provider, setProvider] = useState<DictionaryProvider>(() => readDictionaryProvider(dbNamespace));
   const providerRef = useRef(provider);
   const text = ui[locale];
-  const [words, setWords] = useState<StoredEntry[]>([]),
+  const [notebook, setNotebook] = useState<LibrarySnapshot>({ words: [], categories: [] }),
     [loading, setLoading] = useState(true),
     [loadError, setLoadError] = useState<Message | null>(null),
     [storeReady, setStoreReady] = useState(false);
@@ -75,9 +79,41 @@ export default function Home() {
   const pageTurnFocus = useRef(false);
   const [practice, dispatchPractice] = useReducer(practiceReducer, initialPracticeState);
   const practicing = useRef(false);
-  const results = useMemo(() => selectLibraryEntries(words, libraryQuery, librarySort), [words, libraryQuery, librarySort]);
+  const { words, categories } = notebook;
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all');
+  const categoryFilterRef = useRef<CategoryFilter>('all');
+  const [draftCategories, setDraftCategories] = useState<number[]>([]);
+  const [importCategories, setImportCategories] = useState<number[]>([]);
+  const [bulkCategories, setBulkCategories] = useState<number[]>([]);
+  const [categoryAction, setCategoryAction] = useState<CategoryChange['mode']>('add');
+  const [selecting, setSelecting] = useState(false);
+  const [selectedWordIds, setSelectedWordIds] = useState<number[]>([]);
+  const selectionRevision = useRef(0);
+  const selectionStart = useRef<HTMLButtonElement>(null);
+  const selectedWords = useMemo(() => new Set(selectedWordIds), [selectedWordIds]);
+  const categoryNames = useMemo(() => new Map(categories.map(category => [category.id, category.name])), [categories]);
+  const results = useMemo(() => selectLibraryEntries(words, libraryQuery, librarySort, categoryFilter),
+    [words, libraryQuery, librarySort, categoryFilter]);
+  const outsideSelection = selectedWordIds.length - results.filter(entry => selectedWords.has(entry.id)).length;
   const eligible = useMemo(() => eligiblePracticeEntries(results), [results]);
   const page = paginateLibraryEntries(results, libraryPage);
+  const cancelSelection = useCallback(() => {
+    selectionRevision.current++;
+    setSelecting(false);
+    setSelectedWordIds([]);
+  }, []);
+
+  function changeCategoryFilter(next: CategoryFilter) {
+    categoryFilterRef.current = next;
+    setCategoryFilter(next);
+    setLibraryPage(1);
+    cancelSelection();
+  }
+
+  function selectEntries(entries: readonly StoredEntry[]) {
+    if (operationLock.current) return;
+    setSelectedWordIds(previous => [...new Set([...previous, ...entries.map(entry => entry.id)])]);
+  }
 
   // Mount-only listeners and tools share this entry point, using current refs rather than their first render.
   const navigate = useCallback((next: PageRoute, target?: NavigationTarget, push = true) => {
@@ -101,8 +137,9 @@ export default function Home() {
     pendingNavigation.current = { route: next, target: destination, revision };
     setRoute(next);
     setNavigationRevision(revision);
+    cancelSelection();
     dispatchPractice({ type: 'exit' });
-  }, []);
+  }, [cancelSelection]);
 
   useLayoutEffect(() => {
     const previousRestoration = window.history.scrollRestoration;
@@ -166,6 +203,7 @@ export default function Home() {
     navigationSequence.current++;
     pageTurnFocus.current = false;
     practicing.current = true;
+    cancelSelection();
     dispatchPractice({ type: 'start', cards });
   }
 
@@ -178,7 +216,13 @@ export default function Home() {
   function clearLibrarySearch() {
     setLibraryQuery('');
     setLibraryPage(1);
+    cancelSelection();
     if (routeRef.current === 'words' && !practicing.current) librarySearch.current?.focus();
+  }
+
+  function clearFilters() {
+    changeCategoryFilter('all');
+    clearLibrarySearch();
   }
 
   function switchLocale(next: Locale) {
@@ -199,9 +243,17 @@ export default function Home() {
     const request = ++listRequest.current;
     if (!silent) setLoading(true);
     try {
-      const entries = await store.list();
+      const snapshot = await store.snapshot();
       if (!active.current || request !== listRequest.current) return;
-      setWords(entries);
+      setNotebook(snapshot);
+      const categoryIds = new Set(snapshot.categories.map(category => category.id));
+      const wordIds = new Set(snapshot.words.map(entry => entry.id));
+      setDraftCategories(previous => previous.filter(id => categoryIds.has(id)));
+      setImportCategories(previous => previous.filter(id => categoryIds.has(id)));
+      setBulkCategories(previous => previous.filter(id => categoryIds.has(id)));
+      setSelectedWordIds(previous => previous.filter(id => wordIds.has(id)));
+      if (typeof categoryFilterRef.current === 'number' && !categoryIds.has(categoryFilterRef.current))
+        changeCategoryFilter('all');
       setLoadError(null);
       ready.current = true;
       setStoreReady(true);
@@ -222,13 +274,16 @@ export default function Home() {
     const onFocus = () => {
       if (!operationLock.current) void refresh(true);
     };
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
     window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       active.current = false;
       listRequest.current++;
       queryRequest.current++;
       queryController.current?.abort();
       window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
@@ -297,13 +352,21 @@ export default function Home() {
   }
 
   // Lock synchronously with a ref to prevent rapid submissions before disabled takes effect.
-  function beginOperation(next: Operation) {
+  function beginOperation(next: Operation, confirmation?: string) {
     if (operationLock.current) return false;
     if (!ready.current) {
       setError({ code: 'storeNotReady' });
       return false;
     }
     operationLock.current = next;
+    if (confirmation && !window.confirm(confirmation)) {
+      operationLock.current = '';
+      return false;
+    }
+    if (next !== 'export') {
+      listRequest.current++;
+      setLoading(false);
+    }
     setOperation(next);
     setError(null);
     setNotice(null);
@@ -317,10 +380,8 @@ export default function Home() {
   async function save() {
     if (!draft || !beginOperation('save')) return;
     try {
-      const entry = await store.save(draft);
+      await store.save(draft, [...draftCategories]);
       if (!active.current) return;
-      listRequest.current++;
-      setWords((previous) => [entry, ...previous.filter((item) => item.id !== entry.id)]);
       setDraft(null);
       setInput('');
       setWarnings([]);
@@ -335,11 +396,8 @@ export default function Home() {
   }
 
   async function remove(entry: StoredEntry, trigger: HTMLButtonElement) {
-    if (!beginOperation('delete')) return;
+    if (!beginOperation('delete', ui[localeRef.current].confirmDelete(entry.word))) return;
     try {
-      if (!window.confirm(ui[localeRef.current].confirmDelete(entry.word))) return;
-      listRequest.current++;
-      setLoading(false);
       await store.remove(entry.id);
       if (!active.current) return;
       if (routeRef.current === 'words' && !practicing.current && wordsPage.current && !wordsPage.current.hidden
@@ -350,7 +408,6 @@ export default function Home() {
           ?? collectionHeading.current;
         next?.focus({ preventScroll: true });
       }
-      setWords((previous) => previous.filter((item) => item.id !== entry.id));
       setNotice({ code: 'deleted', params: { word: entry.word } });
       await refresh(true);
     } catch (error) {
@@ -363,7 +420,7 @@ export default function Home() {
   async function exportBackup() {
     if (!beginOperation('export')) return;
     try {
-      const backup = serializeBackup(await store.list());
+      const backup = serializeBackup(await store.snapshot());
       if (!active.current) return;
       const url = URL.createObjectURL(new Blob([backup], { type: 'application/json;charset=utf-8' }));
       const link = document.createElement('a');
@@ -381,17 +438,109 @@ export default function Home() {
     }
   }
 
-  async function importBackup(file: File, overwriteExisting: boolean) {
+  async function importBackup(file: File, overwriteExisting: boolean, categoryIds: readonly number[]) {
     if (!beginOperation('import')) return;
+    const selectedCategoryIds = [...categoryIds];
     try {
       if (file.size > MAX_BACKUP_BYTES) throw new MessageError({ code: 'importFileTooLarge' });
       const entries = parseBackup(await file.text());
-      const result = await store.importEntries(entries, { overwriteExisting });
+      const result = await store.importEntries(entries, { overwriteExisting, selectedCategoryIds });
       if (!active.current) return;
       setNotice({ code: 'imported', params: result });
       await refresh(true);
     } catch (error) {
       if (active.current) setError({ code: 'importFailed', params: { reason: errorMessage(error) } });
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function createCategory(name: string, target?: CategoryTarget): Promise<boolean> {
+    if (!beginOperation('category')) return false;
+    const navigation = navigationSequence.current;
+    const selection = selectionRevision.current;
+    try {
+      const category = await store.createCategory(name);
+      if (!active.current) return false;
+      if (navigation === navigationSequence.current && (target !== 'bulk' || selection === selectionRevision.current)) {
+        const setSelection = target === 'draft' ? setDraftCategories : target === 'import' ? setImportCategories : target === 'bulk' ? setBulkCategories : null;
+        setSelection?.(previous => [...new Set([...previous, category.id])]);
+      }
+      setNotice({ code: 'categorySaved' });
+      await refresh(true);
+      return true;
+    } catch (error) {
+      if (active.current) {
+        setError(errorMessage(error));
+        await refresh(true);
+      }
+      return false;
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function renameCategory(id: number, name: string) {
+    if (!beginOperation('category')) return;
+    try {
+      await store.renameCategory(id, name);
+      if (!active.current) return;
+      setNotice({ code: 'categorySaved' });
+      await refresh(true);
+    } catch (error) {
+      if (active.current) {
+        setError(errorMessage(error));
+        await refresh(true);
+      }
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function deleteCategory(category: Category, trigger: HTMLButtonElement) {
+    if (!beginOperation('category', ui[localeRef.current].confirmDeleteCategory(category.name))) return;
+    try {
+      await store.deleteCategory(category.id);
+      if (!active.current) return;
+      if (routeRef.current === 'words' && !practicing.current && document.activeElement === trigger && document.hasFocus())
+        trigger.closest('details')?.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+      setNotice({ code: 'categoryDeleted' });
+      await refresh(true);
+    } catch (error) {
+      if (active.current) {
+        setError(errorMessage(error));
+        await refresh(true);
+      }
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function applyCategories(trigger: HTMLButtonElement) {
+    if (!selectedWordIds.length || (categoryAction !== 'clear' && !bulkCategories.length)) return;
+    const ids = [...selectedWordIds];
+    const change: CategoryChange = categoryAction === 'clear'
+      ? { mode: 'clear' } : { mode: categoryAction, categoryIds: [...bulkCategories] };
+    const copy = ui[localeRef.current];
+    const confirmation = change.mode === 'replace' ? copy.confirmReplaceCategories(ids.length)
+      : change.mode === 'clear' ? copy.confirmClearCategories(ids.length) : undefined;
+    if (!beginOperation('classify', confirmation)) return;
+    const selection = selectionRevision.current;
+    try {
+      const result = await store.updateWordCategories(ids, change);
+      if (!active.current) return;
+      if (selection === selectionRevision.current) {
+        if (routeRef.current === 'words' && !practicing.current && document.activeElement === trigger && document.hasFocus())
+          collectionHeading.current?.focus({ preventScroll: true });
+        cancelSelection();
+      }
+      setNotice({ code: 'categoriesUpdated', params: result });
+      await refresh(true);
+    } catch (error) {
+      if (active.current) {
+        setError(errorMessage(error));
+        await refresh(true);
+      }
     } finally {
       endOperation();
     }
@@ -496,11 +645,22 @@ export default function Home() {
 
   function card(entry: StoredEntry) {
     return (
-      <article className="entry" key={entry.id}>
+      <article className={`entry${selecting ? ' is-selecting' : ''}`} key={entry.id}>
+        {selecting && <label className="entry-selection">
+          <input type="checkbox" checked={selectedWords.has(entry.id)} disabled={!!operation || !storeReady}
+            onChange={event => {
+              if (operationLock.current) return;
+              const checked = event.target.checked;
+              setSelectedWordIds(previous => checked ? [...new Set([...previous, entry.id])] : previous.filter(id => id !== entry.id));
+            }} />
+          <span className="sr-only">{text.selectWord(entry.word)}</span>
+        </label>}
         <details className="entry-details">
           <summary>
             <span className="word-title" lang="en">{entry.word}</span>
             {entry.pos && <span className="pos">{entry.pos}</span>}
+            <span className="entry-categories">{entry.categoryIds.length
+              ? entry.categoryIds.map(id => categoryNames.get(id)).join(' · ') : text.uncategorized}</span>
           </summary>
           <EntryContent entry={entry} locale={locale} showPos={false} />
           <div className="entry-delete">
@@ -675,6 +835,10 @@ export default function Home() {
                       {field('example', text.example)}
                     </div>
                   </details>
+                  <CategoryPicker label={text.categories} categories={categories} selectedIds={draftCategories}
+                    locale={locale} disabled={!!operation || !storeReady} onChange={ids => {
+                      if (!operationLock.current) setDraftCategories(ids);
+                    }} onCreate={name => createCategory(name, 'draft')} />
                   <div className="draft-actions">
                     <button className="primary" disabled={!!operation || !storeReady} onClick={save}>
                       {operation === 'save' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
@@ -687,6 +851,11 @@ export default function Home() {
             </div>
             <section className="import-backup" aria-labelledby="import-title">
               <h2 id="import-title" ref={importHeading} tabIndex={-1}>{text.importBackup}</h2>
+              <CategoryPicker label={text.importCategories} categories={categories} selectedIds={importCategories}
+                locale={locale} disabled={!!operation || !storeReady} onChange={ids => {
+                  if (!operationLock.current) setImportCategories(ids);
+                }} onCreate={name => createCategory(name, 'import')} />
+              <p className="field-hint">{text.importCategoriesHint}</p>
               <label className="import-option">
                 <input
                   type="checkbox"
@@ -700,6 +869,7 @@ export default function Home() {
                 <span>{text.overwriteExisting}</span>
               </label>
               <p id="import-note" className="backup-note">{overwriteExisting ? text.importOverwriteNote : text.importNote}</p>
+              <p className="backup-note">{text.importMergeHint}</p>
               <button className="secondary" disabled={!!operation || !storeReady}
                 onClick={() => fileInput.current?.click()}>
                 {operation === 'import' ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />}
@@ -714,7 +884,7 @@ export default function Home() {
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   event.target.value = '';
-                  if (file) void importBackup(file, overwriteExisting);
+                  if (file) void importBackup(file, overwriteExisting, [...importCategories]);
                 }}
               />
             </section>
@@ -737,6 +907,29 @@ export default function Home() {
               </details>
             </div>
             <p className="storage-note">{text.storageSummary}</p>
+            <div className="category-toolbar">
+              <label>
+                <span className="sr-only">{text.filterCategory}</span>
+                <select className="provider-select" value={categoryFilter} disabled={!storeReady} onChange={event => {
+                  const value = event.target.value;
+                  changeCategoryFilter(value === 'all' || value === 'uncategorized' ? value : Number(value));
+                }}>
+                  <option value="all">{text.allCategories}</option>
+                  <option value="uncategorized">{text.uncategorized}</option>
+                  <optgroup label={text.categories}>
+                    {categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}
+                  </optgroup>
+                </select>
+              </label>
+              <button className="secondary" ref={selectionStart} type="button" aria-pressed={selecting}
+                disabled={!!operation || !storeReady || (!selecting && !results.length)} onClick={() => {
+                  if (operationLock.current) return;
+                  cancelSelection();
+                  if (!selecting) setSelecting(true);
+                }}>{text.selectWords}</button>
+            </div>
+            <CategoryManager categories={categories} locale={locale} disabled={!!operation || !storeReady}
+              onCreate={name => createCategory(name)} onRename={renameCategory} onDelete={deleteCategory} />
             <div className="library-tools">
               <div className="library-search">
                 <label className="sr-only" htmlFor="library-search">{text.searchLibrary}</label>
@@ -752,6 +945,7 @@ export default function Home() {
                   onChange={(event) => {
                     setLibraryQuery(event.target.value);
                     setLibraryPage(1);
+                    cancelSelection();
                   }}
                 />
                 {libraryQuery && (
@@ -788,6 +982,39 @@ export default function Home() {
                 {!loading && !loadError && results.length > 0 && !eligible.length && <p className="field-hint">{text.practiceUnavailable}</p>}
               </div>
             )}
+            {selecting && <section className="batch-tools" aria-label={text.batchCategories}>
+              <p role="status" aria-atomic="true">{text.selectedWords(selectedWordIds.length)}
+                {outsideSelection > 0 && <span className="category-summary">{text.selectedOutsideResults(outsideSelection)}</span>}
+              </p>
+              <div className="selection-actions">
+                <button className="secondary" type="button" disabled={!!operation || !storeReady || !page.entries.length}
+                  onClick={() => selectEntries(page.entries)}>{text.selectPage}</button>
+                <button className="secondary" type="button" disabled={!!operation || !storeReady || !results.length}
+                  onClick={() => selectEntries(results)}>{text.selectResults}</button>
+                <button className="text-button" type="button" disabled={!!operation} onClick={() => {
+                  cancelSelection();
+                  selectionStart.current?.focus({ preventScroll: true });
+                }}>{text.cancelSelection}</button>
+              </div>
+              <label className="batch-action">
+                <span>{text.categoryAction}</span>
+                <select className="provider-select" value={categoryAction} disabled={!!operation || !storeReady}
+                  onChange={event => { if (!operationLock.current) setCategoryAction(event.target.value as CategoryChange['mode']); }}>
+                  <option value="add">{text.addCategories}</option>
+                  <option value="remove">{text.removeCategories}</option>
+                  <option value="replace">{text.replaceCategories}</option>
+                  <option value="clear">{text.clearCategories}</option>
+                </select>
+              </label>
+              {categoryAction !== 'clear' && <CategoryPicker label={text.targetCategories} categories={categories}
+                selectedIds={bulkCategories} locale={locale} disabled={!!operation || !storeReady} onChange={ids => {
+                  if (!operationLock.current) setBulkCategories(ids);
+                }} onCreate={name => createCategory(name, 'bulk')} />}
+              {(categoryAction === 'replace' || categoryAction === 'clear') && <p className="field-hint">{text.replaceCategoriesHint}</p>}
+              <button className="primary" type="button"
+                aria-disabled={!!operation || !storeReady || !selectedWordIds.length || (categoryAction !== 'clear' && !bulkCategories.length)}
+                onClick={event => void applyCategories(event.currentTarget)}>{text.applyCategories}</button>
+            </section>}
             <div className="entry-list">{page.entries.map(card)}</div>
             {page.pageCount > 1 && (
               <nav className="library-pagination" aria-label={text.libraryPagination}>
@@ -800,13 +1027,14 @@ export default function Home() {
                 </button>
               </nav>
             )}
-            {!loading && !loadError && words.length > 0 && !results.length && (
+            {!loading && !loadError && !results.length && (words.length > 0 || categoryFilter !== 'all' || libraryQuery.trim()) && (
               <div className="empty-state">
-                <p>{text.noMatches}</p>
-                <button className="text-button" onClick={clearLibrarySearch}>{text.clearSearch}</button>
+                <p>{libraryQuery.trim() || categoryFilter === 'all' ? text.noMatches
+                  : categoryFilter === 'uncategorized' ? text.emptyUncategorized : text.emptyCategory}</p>
+                <button className="text-button" onClick={clearFilters}>{text.clearFilters}</button>
               </div>
             )}
-            {!loading && !loadError && !words.length && (
+            {!loading && !loadError && !words.length && categoryFilter === 'all' && !libraryQuery.trim() && (
               <div className="empty-state">
                 <p>{text.emptyNotebook}</p>
                 <div className="empty-actions">

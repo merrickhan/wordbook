@@ -1,9 +1,15 @@
 import { validateCreated, validateDatedEntry, validateEntry } from './entry';
-import type { DatedEntry, StoredEntry } from './entry';
+import type { StoredEntry } from './entry';
+import {
+  MAX_CATEGORIES, applyCategoryChange, categoryNameKey, normalizeCategoryName,
+  validateCategoryChange, validateCategoryIds, validateImportBatch,
+  type Category, type CategoryChange, type ImportBatch, type LibrarySnapshot,
+} from './categories';
 import { MessageError, type Message } from './messages';
 
 type StoreOptions = { name: string; indexedDB?: IDBFactory; now?: () => Date };
 type WatchRequest = <T>(request: IDBRequest<T>, success: (value: T) => void) => void;
+type CategoryDirectory = Map<number, Category>;
 
 function storageError(error: unknown): Error {
   if (error instanceof MessageError) return error;
@@ -22,6 +28,67 @@ function storageError(error: unknown): Error {
   else if (name === 'ConstraintError')
     message = { code: 'storageConstraint' };
   return new MessageError(message, { cause: error });
+}
+
+function validateId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+    throw new MessageError({ code: 'storageInvalidId' });
+  return value;
+}
+
+function validateWordIds(value: unknown): number[] {
+  if (!Array.isArray(value)) throw new MessageError({ code: 'storageInvalidId' });
+  return [...new Set(Array.from(value, (id, index) => {
+    if (!Object.hasOwn(value, index)) throw new MessageError({ code: 'storageInvalidId' });
+    return validateId(id);
+  }))];
+}
+
+function readCategories(store: IDBObjectStore, watch: WatchRequest, ready: (directory: CategoryDirectory) => void) {
+  watch(store.getAll(), values => {
+    const directory: CategoryDirectory = new Map();
+    const names = new Set<string>();
+    try {
+      if (values.length > MAX_CATEGORIES) throw new Error('Too many stored categories');
+      for (const value of values) {
+        const id = validateId(value.id);
+        const name = normalizeCategoryName(value.name);
+        const key = categoryNameKey(name);
+        if (name !== value.name || key !== value.normalizedName || names.has(key) || directory.has(id))
+          throw new Error('Invalid stored category');
+        directory.set(id, { id, name });
+        names.add(key);
+      }
+    } catch (error) {
+      throw new MessageError({ code: 'storageInvalidRecord' }, { cause: error });
+    }
+    ready(directory);
+  });
+}
+
+function requireCategories(ids: readonly number[], directory: CategoryDirectory) {
+  if (ids.some(id => !directory.has(id))) throw new MessageError({ code: 'categoryMissing' });
+}
+
+function readWord(value: unknown, directory: CategoryDirectory, primaryKey?: IDBValidKey): StoredEntry {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new MessageError({ code: 'storageInvalidRecord' });
+  const raw = value as Record<string, unknown>;
+  const id = validateId(raw.id);
+  try {
+    if (primaryKey !== undefined && primaryKey !== id) throw new Error('Mismatched stored ID');
+    const entry = validateDatedEntry(raw);
+    // Only records without the property are legacy records. Never repair them during reads.
+    const categoryIds = Object.hasOwn(raw, 'categoryIds') ? validateCategoryIds(raw.categoryIds) : [];
+    requireCategories(categoryIds, directory);
+    return { ...entry, id, categoryIds };
+  } catch (error) {
+    throw new MessageError({ code: 'storageInvalidRecord' }, { cause: error });
+  }
+}
+
+function sameIds(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 export function databaseName(pageUrl: string): string {
@@ -65,7 +132,7 @@ export function createWordStore(options: StoreOptions) {
       const factory = options.indexedDB ?? globalThis.indexedDB;
       if (!factory)
         throw new MessageError({ code: 'storageUnsupported' });
-      const request = factory.open(options.name, 1);
+      const request = factory.open(options.name, 2);
       const abortUpgrade = () => {
         try {
           request.transaction?.abort();
@@ -73,17 +140,26 @@ export function createWordStore(options: StoreOptions) {
           // An external close or failure may have already aborted the upgrade transaction.
         }
       };
-      request.onupgradeneeded = () => {
+      request.onupgradeneeded = event => {
         if (settled) {
           abortUpgrade();
           return;
         }
         try {
-          const words = request.result.createObjectStore('words', {
-            keyPath: 'id',
-            autoIncrement: true,
-          });
-          words.createIndex('word', 'word', { unique: true });
+          if (event.oldVersion < 1) {
+            const words = request.result.createObjectStore('words', {
+              keyPath: 'id',
+              autoIncrement: true,
+            });
+            words.createIndex('word', 'word', { unique: true });
+          }
+          if (event.oldVersion < 2) {
+            const categories = request.result.createObjectStore('categories', {
+              keyPath: 'id',
+              autoIncrement: true,
+            });
+            categories.createIndex('normalizedName', 'normalizedName', { unique: true });
+          }
         } catch (error) {
           fail(error);
           abortUpgrade();
@@ -116,12 +192,12 @@ export function createWordStore(options: StoreOptions) {
 
   async function transact<T>(
     mode: IDBTransactionMode,
-    start: (words: IDBObjectStore, watch: WatchRequest, result: (value: T) => void) => void,
+    start: (words: IDBObjectStore, categories: IDBObjectStore, watch: WatchRequest, result: (value: T) => void) => void,
   ): Promise<T> {
     const db = await open();
     let transaction: IDBTransaction;
     try {
-      transaction = db.transaction('words', mode);
+      transaction = db.transaction(['words', 'categories'], mode);
     } catch (error) {
       release(db);
       throw storageError(error);
@@ -158,7 +234,7 @@ export function createWordStore(options: StoreOptions) {
         else resolve(value);
       };
       try {
-        start(transaction.objectStore('words'), watch, result => {
+        start(transaction.objectStore('words'), transaction.objectStore('categories'), watch, result => {
           value = result;
           hasResult = true;
         });
@@ -171,79 +247,201 @@ export function createWordStore(options: StoreOptions) {
     return operation;
   }
 
-  async function list(): Promise<StoredEntry[]> {
-    return transact<StoredEntry[]>('readonly', (words, watch, result) => {
-      const entries: StoredEntry[] = [];
-      watch(words.openCursor(null, 'prev'), cursor => {
-        if (!cursor) {
-          result(entries);
-          return;
-        }
-        const id = cursor.primaryKey;
-        if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
-          throw new MessageError({ code: 'storageInvalidRecord' });
-        entries.push({ ...validateDatedEntry(cursor.value), id });
-        cursor.continue();
+  async function snapshot(): Promise<LibrarySnapshot> {
+    return transact('readonly', (words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        const entries: StoredEntry[] = [];
+        watch(words.openCursor(null, 'prev'), cursor => {
+          if (!cursor) {
+            result({ words: entries, categories: [...directory.values()] });
+            return;
+          }
+          entries.push(readWord(cursor.value, directory, cursor.primaryKey));
+          cursor.continue();
+        });
       });
     });
   }
 
-  async function save(value: unknown): Promise<StoredEntry> {
+  async function list(): Promise<StoredEntry[]> {
+    return (await snapshot()).words;
+  }
+
+  async function save(value: unknown, categoryIds: readonly number[] = []): Promise<StoredEntry> {
     const entry = validateEntry(value);
+    const ids = validateCategoryIds(categoryIds);
     let created: string;
     try {
       created = validateCreated(now().toISOString());
     } catch (error) {
       throw new MessageError({ code: 'invalidClock' }, { cause: error });
     }
-    return transact<StoredEntry>('readwrite', (words, watch, result) => {
-      watch(words.index('word').getKey(entry.word), existing => {
-        if (existing !== undefined)
-          throw new MessageError({ code: 'duplicateWord', params: { word: entry.word } });
-        const dated = { ...entry, created };
-        watch(words.add(dated), id => {
-          if (typeof id !== 'number') throw new MessageError({ code: 'storageInvalidId' });
-          result({ ...dated, id });
+    return transact('readwrite', (words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        requireCategories(ids, directory);
+        watch(words.index('word').getKey(entry.word), existing => {
+          if (existing !== undefined)
+            throw new MessageError({ code: 'duplicateWord', params: { word: entry.word } });
+          const dated = { ...entry, created, categoryIds: ids };
+          watch(words.add(dated), id => result({ ...dated, id: validateId(id) }));
         });
       });
     });
   }
 
   async function remove(id: number): Promise<void> {
-    if (!Number.isSafeInteger(id) || id <= 0)
-      throw new MessageError({ code: 'storageInvalidId' });
-    return transact<void>('readwrite', (words, watch, result) => {
+    validateId(id);
+    return transact('readwrite', (words, _categories, watch, result) => {
       watch(words.delete(id), () => result(undefined));
     });
   }
 
-  async function importEntries(
-    values: readonly DatedEntry[],
-    { overwriteExisting = false }: { overwriteExisting?: boolean } = {},
-  ): Promise<{ imported: number; updated: number; skipped: number }> {
-    if (!Array.isArray(values)) throw new MessageError({ code: 'importEntriesInvalid' });
-    // Validate the entire batch, including duplicates, before starting a single readwrite transaction.
-    const entries = Array.from(values, validateDatedEntry);
-    return transact('readwrite', (words, watch, result) => {
-      const counts = { imported: 0, updated: 0, skipped: 0 };
-      const seen = new Set<string>();
-      const index = words.index('word');
-      result(counts);
-      for (const entry of entries) {
-        if (seen.has(entry.word)) {
-          counts.skipped++;
-          continue;
-        }
-        seen.add(entry.word);
-        watch(index.getKey(entry.word), existing => {
-          if (existing === undefined) watch(words.add(entry), () => counts.imported++);
-          else if (overwriteExisting === true) {
-            if (typeof existing !== 'number' || !Number.isSafeInteger(existing) || existing <= 0)
-              throw new MessageError({ code: 'storageInvalidId' });
-            watch(words.put({ ...entry, id: existing }), () => counts.updated++);
-          } else counts.skipped++;
+  async function createCategory(value: unknown): Promise<Category> {
+    const name = normalizeCategoryName(value);
+    const normalizedName = categoryNameKey(name);
+    return transact('readwrite', (_words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        if ([...directory.values()].some(category => categoryNameKey(category.name) === normalizedName))
+          throw new MessageError({ code: 'duplicateCategory' });
+        if (directory.size >= MAX_CATEGORIES) throw new MessageError({ code: 'tooManyCategories' });
+        watch(categories.add({ name, normalizedName }), id => result({ id: validateId(id), name }));
+      });
+    });
+  }
+
+  async function renameCategory(id: number, value: unknown): Promise<Category> {
+    validateId(id);
+    const name = normalizeCategoryName(value);
+    const normalizedName = categoryNameKey(name);
+    return transact('readwrite', (_words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        if (!directory.has(id)) throw new MessageError({ code: 'categoryMissing' });
+        if ([...directory.values()].some(category => category.id !== id && categoryNameKey(category.name) === normalizedName))
+          throw new MessageError({ code: 'duplicateCategory' });
+        watch(categories.put({ id, name, normalizedName }), () => result({ id, name }));
+      });
+    });
+  }
+
+  async function deleteCategory(id: number): Promise<void> {
+    validateId(id);
+    return transact('readwrite', (words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        result(undefined);
+        if (!directory.has(id)) return;
+        watch(categories.delete(id), () => {
+          watch(words.openCursor(), cursor => {
+            if (!cursor) return;
+            const raw = cursor.value;
+            const entry = readWord(raw, directory, cursor.primaryKey);
+            if (entry.categoryIds.includes(id)) {
+              // Relationship-only writes must not trim or reconstruct historical lexical content.
+              watch(cursor.update({ ...raw, categoryIds: entry.categoryIds.filter(value => value !== id) }), () => {});
+            }
+            cursor.continue();
+          });
         });
-      }
+      });
+    });
+  }
+
+  async function updateWordCategories(
+    wordIds: readonly number[], value: CategoryChange,
+  ): Promise<{ changed: number; unchanged: number; missing: number }> {
+    const ids = validateWordIds(wordIds);
+    const change = validateCategoryChange(value);
+    return transact('readwrite', (words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        if (change.mode !== 'clear') requireCategories(change.categoryIds, directory);
+        const counts = { changed: 0, unchanged: 0, missing: 0 };
+        result(counts);
+        for (const id of ids) {
+          watch(words.get(id), raw => {
+            if (raw === undefined) {
+              counts.missing++;
+              return;
+            }
+            const entry = readWord(raw, directory, id);
+            const categoryIds = applyCategoryChange(entry.categoryIds, change);
+            if (sameIds(categoryIds, entry.categoryIds)) counts.unchanged++;
+            else watch(words.put({ ...raw, categoryIds }), () => counts.changed++);
+          });
+        }
+      });
+    });
+  }
+
+  async function importEntries(
+    value: ImportBatch,
+    { overwriteExisting = false, selectedCategoryIds = [] }: {
+      overwriteExisting?: boolean; selectedCategoryIds?: readonly number[];
+    } = {},
+  ): Promise<{ imported: number; updated: number; skipped: number; classified: number; categoriesCreated: number }> {
+    // Snapshot every record and option before the first await, including later duplicate words.
+    const batch = validateImportBatch(value);
+    const selected = validateCategoryIds(selectedCategoryIds);
+    const overwrite = overwriteExisting === true;
+    return transact('readwrite', (words, categories, watch, result) => {
+      readCategories(categories, watch, directory => {
+        requireCategories(selected, directory);
+        const byName = new Map([...directory.values()].map(category => [categoryNameKey(category.name), category.id]));
+        const missing = batch.categories.filter(name => !byName.has(categoryNameKey(name)));
+        if (directory.size + missing.length > MAX_CATEGORIES) throw new MessageError({ code: 'tooManyCategories' });
+        const counts = { imported: 0, updated: 0, skipped: 0, classified: 0, categoriesCreated: 0 };
+        result(counts);
+        const importWords = () => {
+          const seen = new Set<string>();
+          const index = words.index('word');
+          for (const { categories: names, ...entry } of batch.entries) {
+            if (seen.has(entry.word)) {
+              counts.skipped++;
+              continue;
+            }
+            seen.add(entry.word);
+            const incoming = validateCategoryIds([...new Set([...selected, ...names.map(name => {
+              const id = byName.get(categoryNameKey(name));
+              if (id === undefined) throw new MessageError({ code: 'categoryMissing' });
+              return id;
+            })])]);
+            watch(index.get(entry.word), raw => {
+              if (raw === undefined) {
+                watch(words.add({ ...entry, categoryIds: incoming }), id => {
+                  validateId(id);
+                  counts.imported++;
+                  if (incoming.length) counts.classified++;
+                });
+                return;
+              }
+              const existing = readWord(raw, directory);
+              const categoryIds = applyCategoryChange(existing.categoryIds, { mode: 'add', categoryIds: incoming });
+              const classified = categoryIds.length > existing.categoryIds.length;
+              if (overwrite) {
+                watch(words.put({ ...entry, id: existing.id, categoryIds }), () => {
+                  counts.updated++;
+                  if (classified) counts.classified++;
+                });
+              } else {
+                counts.skipped++;
+                if (classified) watch(words.put({ ...raw, categoryIds }), () => counts.classified++);
+              }
+            });
+          }
+        };
+        if (!missing.length) importWords();
+        else {
+          let remaining = missing.length;
+          for (const name of missing) {
+            const normalizedName = categoryNameKey(name);
+            watch(categories.add({ name, normalizedName }), key => {
+              const id = validateId(key);
+              directory.set(id, { id, name });
+              byName.set(normalizedName, id);
+              counts.categoriesCreated++;
+              if (--remaining === 0) importWords();
+            });
+          }
+        }
+      });
     });
   }
 
@@ -253,5 +451,8 @@ export function createWordStore(options: StoreOptions) {
     await Promise.allSettled([...active]);
   }
 
-  return { list, save, remove, importEntries, close };
+  return {
+    snapshot, list, save, remove, createCategory, renameCategory, deleteCategory,
+    updateWordCategories, importEntries, close,
+  };
 }

@@ -3,9 +3,9 @@ import test from 'node:test';
 import type { StoredEntry } from '../src/entry';
 import { LIBRARY_PAGE_SIZE, paginateLibraryEntries, selectLibraryEntries, type LibrarySort } from '../src/library';
 
-function entry(id: number, word: string, translation = ''): StoredEntry {
+function entry(id: number, word: string, translation = '', categoryIds: number[] = []): StoredEntry {
   return {
-    id, word, translation,
+    id, word, translation, categoryIds,
     phonetic: '/synthetic-phonetic/',
     pos: 'Synthetic part of speech',
     definition: 'Synthetic definition only',
@@ -81,6 +81,34 @@ test('multilingual search does not normalize accents, width, punctuation, or int
   }
 });
 
+test('category views intersect literal word or translation searches and default to all memberships', () => {
+  const values = [
+    entry(1, 'orchard', 'APPLE meaning', [11]),
+    entry(2, 'apple', 'Fruit', [22]),
+    entry(3, 'pineapple', 'FRUIT', [11, 22]),
+    entry(4, 'pear', 'An apple substitute'),
+    entry(5, 'bracket', 'literal.*[value]?', [11]),
+    entry(6, 'plain', 'APPLE taste'),
+    entry(7, 'other', 'No matching text', [9001]),
+  ];
+  for (const sort of sorts) {
+    assert.deepEqual(selectLibraryEntries(values, 'apple', sort), selectLibraryEntries(values, 'apple', sort, 'all'));
+    assert.deepEqual(selectLibraryEntries(values, '', sort, 'all'), selectLibraryEntries(values, '', sort));
+    for (const [category, query, expected] of [
+      ['all', '  ApPlE\n', [1, 2, 3, 4, 6]],
+      ['uncategorized', '', [4, 6]], ['uncategorized', ' APPLE ', [4, 6]],
+      [11, '', [1, 3, 5]], [11, ' APPLE ', [1, 3]], [22, ' APPLE ', [2, 3]],
+      [11, 'fruit', [3]], [22, 'fruit', [2, 3]],
+      [11, '[value]', [5]], [11, '.*', [5]], [22, '[value]', []],
+      [1234, '', []], [9001, '9001', []], ['all', '9001', []],
+    ] as const) {
+      assert.deepEqual(new Set(ids(selectLibraryEntries(values, query, sort, category))), new Set(expected), `${category}: ${query}`);
+    }
+    assert.deepEqual(selectLibraryEntries([], '', sort, 'uncategorized'), []);
+    assert.deepEqual(selectLibraryEntries([], '', sort, 11), []);
+  }
+});
+
 test('recent ordering uses descending numeric IDs, not creation dates, import order, or words', () => {
   const values = [
     { ...entry(7, 'zulu'), created: '2026-09-28T08:00:00.000Z' },
@@ -102,20 +130,25 @@ test('alphabetical ordering uses fixed English base collation with descending ID
   assert.deepEqual(ids(selectLibraryEntries(values, 'alpha', 'alphabetical')), [20, 3]);
 });
 
-test('filtering and both sorts never mutate the input array or any flat entry contents', () => {
+test('filtering and both sorts never mutate the input array, entry contents or category memberships', () => {
   const values = Object.freeze([
-    Object.freeze(entry(3, 'zulu', '  Full translation\n  ')),
-    Object.freeze(entry(1, ' ALPHA ', 'Mixed CASE')),
-    Object.freeze(entry(2, 'beta', '')),
-  ]);
+    entry(3, 'zulu', '  Full translation\n  ', [2, 7]),
+    entry(1, ' ALPHA ', 'Mixed CASE', [7]),
+    entry(2, 'beta', ''),
+  ].map(value => {
+    Object.freeze(value.categoryIds);
+    return Object.freeze(value);
+  }));
   const before = structuredClone(values);
   for (const sort of sorts) {
     for (const query of ['', 'full', 'case', 'no match']) {
-      const selected = selectLibraryEntries(values, query, sort);
-      for (const value of selected) assert.equal(value, values.find(original => original.id === value.id));
-      selected.reverse();
-      selected.length = 0;
-      assert.deepEqual(values, before);
+      for (const category of ['all', 'uncategorized', 2, 7, 999] as const) {
+        const selected = selectLibraryEntries(values, query, sort, category);
+        for (const value of selected) assert.equal(value, values.find(original => original.id === value.id));
+        selected.reverse();
+        selected.length = 0;
+        assert.deepEqual(values, before);
+      }
     }
   }
 });
@@ -200,4 +233,39 @@ for (const sort of sorts) {
     assert.deepEqual(selected, covered);
     assert.deepEqual(values, before);
   });
+}
+
+for (const category of ['uncategorized', 7] as const) {
+  for (const sort of sorts) {
+    test(`category ${category} and search intersect before ${sort} ordering and pagination`, () => {
+      const categoryIds = category === 'uncategorized' ? [] : [category, 9];
+      const matches = Array.from({ length: 41 }, (_, index) => {
+        const id = index + 1;
+        return entry(id, `term ${String(id).padStart(2, '0')}${id % 2 ? ' needle' : ''}`,
+          id % 2 ? 'meaning' : 'NEEDLE translation', [...categoryIds]);
+      });
+      const wrongText = Array.from({ length: 22 }, (_, index) => entry(index + 100, `unrelated ${index}`, 'not a match', [...categoryIds]));
+      const wrongCategory = Array.from({ length: 22 }, (_, index) => entry(index + 200,
+        index % 2 ? `needle ${index}` : `unrelated ${index}`, index % 2 ? 'meaning' : 'NEEDLE translation', [9]));
+      const values = Object.freeze([...wrongText, ...matches.slice(20), ...wrongCategory, ...matches.slice(0, 20)].map(value => {
+        Object.freeze(value.categoryIds);
+        return Object.freeze(value);
+      }));
+      const before = structuredClone(values);
+      const selected = selectLibraryEntries(values, '  NeEdLe\n', sort, category);
+      const expected = Array.from({ length: 41 }, (_, index) => sort === 'recent' ? 41 - index : index + 1);
+      assert.deepEqual(ids(selected), expected);
+      const covered: StoredEntry[] = [];
+      for (const page of [1, 2, 3]) {
+        const result = paginateLibraryEntries(selected, page);
+        assert.equal(result.pageCount, 3);
+        assert.deepEqual(ids(result.entries), expected.slice((page - 1) * 20, page * 20));
+        covered.push(...result.entries);
+      }
+      assert.deepEqual(ids(covered), expected);
+      assert.equal(new Set(ids(covered)).size, matches.length);
+      covered.forEach((value, index) => assert.equal(value, selected[index]));
+      assert.deepEqual(values, before);
+    });
+  }
 }
