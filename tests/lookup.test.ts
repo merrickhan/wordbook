@@ -608,12 +608,15 @@ for (const provider of providers) {
     const result = await lookup('could', respond(fixture), undefined, provider);
     const edited = validateEntry({ ...result.entry, word: 'would' });
     const created = '2026-09-29T00:00:00.000Z';
-    const restored = parseBackup(serializeBackup([{ ...edited, id: 1, created }], created));
-    assert.equal(restored[0].word, 'would');
-    assert.equal(restored[0].source, result.entry.source);
-    assert.ok(restored[0].source.includes(dictionary.source.url));
-    assert.ok(restored[0].source.includes(DICTIONARY_LICENSE_URL));
-    assert.doesNotMatch(restored[0].source, /wiki\/would/);
+    const restored = parseBackup(serializeBackup({
+      words: [{ ...edited, id: 1, created, categoryIds: [] }], categories: [],
+    }, created));
+    assert.deepEqual(restored.categories, []);
+    assert.equal(restored.entries[0].word, 'would');
+    assert.equal(restored.entries[0].source, result.entry.source);
+    assert.ok(restored.entries[0].source.includes(dictionary.source.url));
+    assert.ok(restored.entries[0].source.includes(DICTIONARY_LICENSE_URL));
+    assert.doesNotMatch(restored.entries[0].source, /wiki\/would/);
   });
 
   test(`${provider}: upstream failures leave an editable draft without retry or fallback`, async () => {

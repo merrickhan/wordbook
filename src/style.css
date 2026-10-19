@@ -645,6 +645,155 @@ select:disabled {
   margin: 0 0 8px;
 }
 
+.category-toolbar,
+.selection-actions,
+.category-name-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.category-toolbar {
+  margin-top: 12px;
+}
+
+.category-toolbar > label {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.category-toolbar select {
+  max-width: 100%;
+}
+
+.category-picker,
+.category-manager {
+  min-width: 0;
+  margin-top: 8px;
+  border-block: 1px solid var(--divider);
+}
+
+.category-count,
+.category-summary,
+.entry-categories {
+  color: var(--muted);
+  font-size: var(--text-small);
+  font-family: var(--font-body);
+  font-weight: 400;
+}
+
+.category-count {
+  margin-inline-start: 8px;
+}
+
+.category-summary,
+.entry-categories {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.6;
+}
+
+.category-picker fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.category-options,
+.category-management-list {
+  padding: 4px;
+}
+
+.category-option,
+.entry-selection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.category-option input,
+.entry-selection input {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--green);
+}
+
+.category-option:has(input:disabled),
+.entry-selection:has(input:disabled) {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.category-create {
+  padding-block: 8px 12px;
+}
+
+.category-create > label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+
+.category-name-actions > input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.category-management-list {
+  margin: 0 0 12px;
+  list-style: none;
+}
+
+.category-management-list > li + li {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+
+.batch-tools {
+  margin-block: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--canvas);
+}
+
+.batch-tools > p {
+  margin: 0 0 8px;
+}
+
+.batch-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.batch-tools > .primary {
+  margin-top: 8px;
+}
+
+.entry.is-selecting {
+  padding-inline-start: 44px;
+}
+
+.entry-selection {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 0;
+  justify-content: center;
+  width: 44px;
+}
+
 .library-tools {
   display: flex;
   flex-wrap: wrap;

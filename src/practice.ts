@@ -19,7 +19,7 @@ export function samplePracticeEntries(
   for (let index = 0; index < count; index++) {
     const picked = index + Math.floor(random() * (pool.length - index));
     [pool[index], pool[picked]] = [pool[picked], pool[index]];
-    selected.push({ ...pool[index] });
+    selected.push({ ...pool[index], categoryIds: [...pool[index].categoryIds] });
   }
   return selected;
 }
@@ -66,7 +66,7 @@ export function practiceReducer(state: PracticeState, action: PracticeAction): P
     if (state.phase !== 'idle') return state;
     const cards = eligiblePracticeEntries(action.cards)
       .slice(0, PRACTICE_LIMIT)
-      .map(entry => ({ ...entry }));
+      .map(entry => ({ ...entry, categoryIds: [...entry.categoryIds] }));
     if (!cards.length) return state;
     return {
       phase: 'card', session: state.session + 1, round: 1, revision: 0, cards,

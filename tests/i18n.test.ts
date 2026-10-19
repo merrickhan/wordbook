@@ -192,12 +192,12 @@ test('import additions, replacements and skips use independent English plurals f
   for (const imported of [0, 1, 7]) {
     for (const updated of [0, 1, 5]) {
       for (const skipped of [0, 1, 3]) {
-        const message: Message = { code: 'imported', params: { imported, updated, skipped } };
+        const message: Message = { code: 'imported', params: { imported, updated, skipped, classified: 0, categoriesCreated: 0 } };
         const before = structuredClone(message);
         assert.equal(formatMessage('zh-CN', message),
-          `已新增 ${imported} 个单词，覆盖 ${updated} 个单词，跳过 ${skipped} 个重复词。`);
+          `已新增 ${imported} 个单词，覆盖 ${updated} 个单词的内容，跳过 ${skipped} 条内容；为 0 个单词新增分类关联，新建 0 个分类。`);
         assert.equal(formatMessage('en', message),
-          `Added ${imported} ${imported === 1 ? 'word' : 'words'}, overwrote ${updated} ${updated === 1 ? 'word' : 'words'}, and skipped ${skipped} ${skipped === 1 ? 'duplicate' : 'duplicates'}.`);
+          `Added ${imported} ${imported === 1 ? 'word' : 'words'}, overwrote content for ${updated} ${updated === 1 ? 'word' : 'words'}, and skipped content for ${skipped} ${skipped === 1 ? 'record' : 'records'}. Added category associations to 0 words and created 0 categories.`);
         assert.deepEqual(message, before);
       }
     }
@@ -293,7 +293,7 @@ test('only exact known source labels translate, not URLs, unknown content or old
 
 test('accent UI and omission warnings are localized without rewriting stored IPA', () => {
   const entry = { ...sample, phonetic: 'US /a/ · UK [b]', id: 1, created: '2024-02-29T12:34:56.789Z' };
-  const before = serializeBackup([entry], entry.created);
+  const before = serializeBackup({ words: [{ ...entry, categoryIds: [] }], categories: [] }, entry.created);
   assert.equal(ui['zh-CN'].unknownAccent, '口音未标注');
   assert.equal(ui.en.unknownAccent, 'Accent not specified');
   for (const locale of ['zh-CN', 'en'] as const) {
@@ -301,7 +301,7 @@ test('accent UI and omission warnings are localized without rewriting stored IPA
     assert.ok(ui[locale].dictionaryHint);
     assert.ok(ui[locale].dictionaryAccentHint);
     assert.ok(formatMessage(locale, { code: 'phoneticOmitted' }));
-    assert.equal(serializeBackup([entry], entry.created), before);
+    assert.equal(serializeBackup({ words: [{ ...entry, categoryIds: [] }], categories: [] }, entry.created), before);
   }
 });
 
@@ -329,15 +329,15 @@ test('formatting UI messages and sources does not alter entries or backup protoc
   for (const source of [sample.source, 'MyMemory（机器翻译）', 'EnglishDictionaryAPI.com | MyMemory（机器翻译）',
     'Historical source: an arbitrary imported note']) {
     const entry = { ...sample, source, id: 1, created: '2024-02-29T12:34:56.789Z' };
-    const before = serializeBackup([entry], entry.created);
+    const before = serializeBackup({ words: [{ ...entry, categoryIds: [] }], categories: [] }, entry.created);
     for (const locale of ['zh-CN', 'en'] as const) {
       source.split(' | ').forEach(part => sourceLabel(locale, part));
       formatDate(locale, entry.created);
       formatMessage(locale, { code: 'saved' });
-      assert.equal(serializeBackup([entry], entry.created), before);
+      assert.equal(serializeBackup({ words: [{ ...entry, categoryIds: [] }], categories: [] }, entry.created), before);
     }
-    assert.equal(parseBackup(before)[0].translation, '调查');
-    assert.equal(parseBackup(before)[0].source, source);
+    assert.equal(parseBackup(before).entries[0].translation, '调查');
+    assert.equal(parseBackup(before).entries[0].source, source);
   }
 });
 
