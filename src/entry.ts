@@ -11,7 +11,7 @@ export type Entry = {
   source: string;
 };
 export type DatedEntry = Entry & { created: string };
-export type StoredEntry = DatedEntry & { id: number };
+export type StoredEntry = DatedEntry & { id: number; categoryIds: number[] };
 
 export const sample: Entry = {
   word: 'investigation',

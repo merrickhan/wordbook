@@ -7,7 +7,7 @@ import { EntryContent } from '../src/entry-content';
 import { formatDate, sourceLabel, ui, type Locale } from '../src/i18n';
 
 const entry: StoredEntry = {
-  id: 1, word: 'apple', phonetic: 'US /synthetic/ · UK /synthetic/',
+  id: 1, categoryIds: [9417, 82391], word: 'apple', phonetic: 'US /synthetic/ · UK /synthetic/',
   translation: '合成答案', pos: 'Synthetic noun', definition: 'Synthetic definition',
   example: 'Synthetic example', created: '2024-02-29T12:34:56.789Z',
   source: 'FreeDictionaryAPI.com | Wiktionary: https://en.wiktionary.org/wiki/apple | CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/ | 词典摘录，可经编辑',
@@ -37,6 +37,13 @@ for (const locale of ['zh-CN', 'en'] as const) {
     assert.equal(html, expected);
     assert.equal((html.match(/rel="noopener noreferrer"/g) || []).length, 3);
     assert.equal((html.match(/<footer>/g) || []).length, 1);
+  });
+
+  test(`${locale} shared answer content never presents category metadata`, () => {
+    const html = render(entry, locale);
+    assert.equal(html, render({ ...entry, categoryIds: [] }, locale));
+    for (const categoryId of entry.categoryIds) assert.equal(html.includes(String(categoryId)), false);
+    assert.doesNotMatch(html, /categoryIds|data-category|class="category/);
   });
 
   test(`${locale} library showPos=false hides only the repeated part of speech`, () => {

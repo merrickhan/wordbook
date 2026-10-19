@@ -244,11 +244,15 @@ test('legacy cleanup preserves persisted IDs, descending order, all entry fields
   // Start above ID 1 so rebuilding the notebook with fresh IDs cannot pass unnoticed.
   const seed = await store.save({ ...sample, word: 'temporary' });
   await store.remove(seed.id);
-  assert.deepEqual(await store.importEntries(values), { imported: 2, updated: 0, skipped: 0 });
-  const before = await store.list();
-  assert.deepEqual(before, values.map((value, index) => ({ ...value, id: index + 2 })).reverse());
+  const batch = { categories: [], entries: values.map(value => ({ ...value, categories: [] })) };
+  assert.deepEqual(await store.importEntries(batch), {
+    imported: 2, updated: 0, skipped: 0, classified: 0, categoriesCreated: 0,
+  });
+  const before = await store.snapshot();
+  assert.deepEqual(before.words, values.map((value, index) => ({ ...value, id: index + 2, categoryIds: [] })).reverse());
+  assert.deepEqual(before.categories, []);
   const backup = serializeBackup(before, exportedAt);
-  assert.deepEqual(JSON.parse(backup), { format: 'wordbook', version: 1, exportedAt, entries: values });
+  assert.deepEqual(JSON.parse(backup), { format: 'wordbook', version: 2, exportedAt, ...batch });
   await store.close();
 
   const storage = memoryStorage();
@@ -256,9 +260,9 @@ test('legacy cleanup preserves persisted IDs, descending order, all entry fields
   storage.setItem(`${namespace}:translationProvider`, 'retired-provider');
   removeLegacyTranslationPreferences(namespace, () => storage);
   assert.equal(storage.data.size, 0);
-  const after = await store.list();
+  const after = await store.snapshot();
   assert.deepEqual(after, before);
-  assert.deepEqual(after.map(value => value.id), [3, 2]);
+  assert.deepEqual(after.words.map(value => value.id), [3, 2]);
   assert.equal(serializeBackup(after, exportedAt), backup);
-  assert.deepEqual(await factory.databases(), [{ name: namespace, version: 1 }]);
+  assert.deepEqual(await factory.databases(), [{ name: namespace, version: 2 }]);
 });

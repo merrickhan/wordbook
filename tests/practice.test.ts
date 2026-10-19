@@ -22,7 +22,7 @@ function entry(id: number, overrides: Partial<StoredEntry> = {}): StoredEntry {
     definition: `Synthetic definition ${id}.`,
     example: `Synthetic example ${id}.`,
     source: `Synthetic historical attribution ${id} | opaque source text`,
-    created, id, ...overrides,
+    created, id, categoryIds: [], ...overrides,
   };
 }
 
@@ -96,7 +96,7 @@ function finish(state: PracticeState, recalled: readonly boolean[]) {
 
 function freezeState<T extends PracticeState>(state: T): Readonly<T> {
   if (state.phase !== 'idle') {
-    state.cards.forEach(value => Object.freeze(value));
+    state.cards.forEach(value => { Object.freeze(value.categoryIds); Object.freeze(value); });
     state.progress.forEach(value => Object.freeze(value));
     Object.freeze(state.cards);
     Object.freeze(state.progress);
@@ -181,19 +181,79 @@ test('partial Fisher–Yates uses injected draws deterministically and can reach
   assert.deepEqual(values, pool(12));
 });
 
-test('sampling defaults to Math.random and copies every selected flat field', t => {
+test('sampling defaults to Math.random and copies every field including nested category IDs', t => {
   const random = t.mock.method(Math, 'random', () => 0);
-  const values = pool(2);
+  const values = [entry(1, { categoryIds: [2, 7] }), entry(2)];
   values[0].translation = ' \nKeep this complete answer\t ';
   const before = structuredClone(values);
   const selected = samplePracticeEntries(values);
   assert.deepEqual(selected, before);
+  selected.forEach((value, index) => assert.notEqual(value.categoryIds, values[index].categoryIds));
   assert.equal(random.mock.callCount(), 2);
+  values[0].categoryIds.splice(0, 2, 9);
+  values[1].categoryIds.push(4);
+  assert.deepEqual(selected, before);
   Object.assign(values[0], entry(20, { word: 'replacement', created: exportedAt }));
   values.reverse();
   values.length = 0;
   assert.deepEqual(selected, before);
 });
+
+test('sampling and reducer starts isolate category arrays between inputs, cards and separate sessions', () => {
+  const sharedCategoryIds = [2, 7];
+  const values = [entry(1, { categoryIds: sharedCategoryIds }), entry(2, { categoryIds: sharedCategoryIds })];
+  const sampled = samplePracticeEntries(values, () => 0);
+  assert.notEqual(sampled[0].categoryIds, sharedCategoryIds);
+  assert.notEqual(sampled[1].categoryIds, sharedCategoryIds);
+  assert.notEqual(sampled[0].categoryIds, sampled[1].categoryIds);
+  const question = start(sampled);
+  const other = start(sampled);
+  for (const [index, card] of question.cards.entries()) {
+    assert.notEqual(card.categoryIds, sampled[index].categoryIds);
+    assert.notEqual(card.categoryIds, other.cards[index].categoryIds);
+    assert.deepEqual(card.categoryIds, [2, 7]);
+  }
+  question.cards[0].categoryIds.push(9);
+  assert.deepEqual(question.cards[1].categoryIds, [2, 7]);
+  assert.deepEqual(other.cards.map(card => card.categoryIds), [[2, 7], [2, 7]]);
+  assert.deepEqual(sampled.map(card => card.categoryIds), [[2, 7], [2, 7]]);
+  assert.deepEqual(sharedCategoryIds, [2, 7]);
+});
+
+for (const category of ['uncategorized', 7] as const) {
+  test(`practice uses all category ${category} and search matches beyond the displayed page`, () => {
+    const categoryIds = category === 'uncategorized' ? [] : [category, 9];
+    const values = [
+      entry(100, { word: 'shared excluded', categoryIds: [9] }),
+      entry(101, { word: 'translation match excluded', translation: 'SHARED answer', categoryIds: [9] }),
+      entry(102, { word: 'no matching text', categoryIds: [...categoryIds] }),
+      ...Array.from({ length: 41 }, (_, index) => entry(index + 1, {
+        word: `shared ${String(index + 1).padStart(2, '0')}`,
+        translation: index < 20 ? ' \t　' : `answer ${index + 1}`,
+        categoryIds: [...categoryIds],
+      })),
+    ];
+    const before = structuredClone(values);
+    for (const sort of ['recent', 'alphabetical'] as const) {
+      const fullResult = selectLibraryEntries(values, ' SHARED ', sort, category);
+      const displayed = paginateLibraryEntries(fullResult, 1);
+      const eligible = eligiblePracticeEntries(fullResult);
+      assert.equal(fullResult.length, 41);
+      assert.equal(displayed.entries.length, 20);
+      assert.equal(eligible.length, 21);
+      assert.equal(eligiblePracticeEntries(displayed.entries).length, sort === 'recent' ? 20 : 0);
+      const sampled = samplePracticeEntries(fullResult, () => 1 - Number.EPSILON);
+      assert.equal(sampled.length, PRACTICE_LIMIT);
+      assert.equal(sampled[0].id, sort === 'recent' ? 21 : 41);
+      assert.ok(!displayed.entries.some(value => value.id === sampled[0].id));
+      assert.ok(sampled.every(value => eligible.some(candidate => candidate.id === value.id)));
+      const question = start(sampled);
+      assert.deepEqual(question.cards, sampled);
+      for (const [index, card] of question.cards.entries()) assert.notEqual(card.categoryIds, sampled[index].categoryIds);
+      assert.deepEqual(values, before);
+    }
+  });
+}
 
 test('practice uses the full filtered result, including eligible entries outside the displayed library page', () => {
   const values = Object.freeze([
@@ -573,11 +633,16 @@ test('exit clears progress in every active phase, keeps the session counter, and
   assert.deepEqual(initialPracticeState, { phase: 'idle', session: 0 });
 });
 
-test('start snapshots flat card content independently of source and sampled arrays through navigation and retries', () => {
-  const values = pool(2);
+test('start snapshots card content and category IDs independently through navigation and retries', () => {
+  const values = [entry(1, { categoryIds: [2, 7] }), entry(2)];
   const sampled = samplePracticeEntries(values, () => 0);
   const before = structuredClone(sampled);
   const question = start(sampled);
+  values[0].categoryIds.splice(0, 2, 9);
+  values[1].categoryIds.push(4);
+  sampled[0].categoryIds.length = 0;
+  sampled[1].categoryIds.push(8);
+  assert.deepEqual(question.cards, before);
   Object.assign(values[0], entry(20, { translation: '', created: exportedAt }));
   values.length = 0;
   Object.assign(sampled[0], entry(21, { translation: 'Replaced outside the session' }));
@@ -614,67 +679,88 @@ function observedFactory() {
 
 async function databaseSnapshot(factory: IDBFactory, name: string) {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = factory.open(name, 1);
+    const request = factory.open(name, 2);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error('Unexpected blocked synthetic database'));
   });
   try {
-    const words = db.transaction('words', 'readonly').objectStore('words');
-    const schema = {
-      version: db.version, stores: [...db.objectStoreNames], keyPath: words.keyPath,
-      autoIncrement: words.autoIncrement,
-      indexes: [...words.indexNames].map(name => {
-        const index = words.index(name);
+    const transaction = db.transaction(['words', 'categories'], 'readonly');
+    const words = transaction.objectStore('words');
+    const categories = transaction.objectStore('categories');
+    const describe = (store: IDBObjectStore) => ({
+      keyPath: store.keyPath, autoIncrement: store.autoIncrement,
+      indexes: [...store.indexNames].map(name => {
+        const index = store.index(name);
         return { name, keyPath: index.keyPath, unique: index.unique, multiEntry: index.multiEntry };
       }),
-    };
-    const request = words.getAll();
-    const raw = await new Promise<StoredEntry[]>((resolve, reject) => {
+    });
+    const schema = { version: db.version, stores: [...db.objectStoreNames], words: describe(words), categories: describe(categories) };
+    const readAll = <T>(store: IDBObjectStore) => new Promise<T[]>((resolve, reject) => {
+      const request = store.getAll();
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    return { schema, raw };
+    const [raw, rawCategories] = await Promise.all([
+      readAll<StoredEntry>(words), readAll<{ id: number; name: string; normalizedName: string }>(categories),
+    ]);
+    return { schema, raw, rawCategories };
   } finally {
     db.close();
   }
 }
 
 const schema = {
-  version: 1, stores: ['words'], keyPath: 'id', autoIncrement: true,
-  indexes: [{ name: 'word', keyPath: 'word', unique: true, multiEntry: false }],
+  version: 2, stores: ['categories', 'words'],
+  words: {
+    keyPath: 'id', autoIncrement: true,
+    indexes: [{ name: 'word', keyPath: 'word', unique: true, multiEntry: false }],
+  },
+  categories: {
+    keyPath: 'id', autoIncrement: true,
+    indexes: [{ name: 'normalizedName', keyPath: 'normalizedName', unique: true, multiEntry: false }],
+  },
 };
 
-test('library views, navigation and rating edits leave exact IndexedDB v1 records and whole-store v1 backups unchanged', async t => {
+test('library views, navigation and rating edits leave exact IndexedDB v2 records and whole-store v2 backups unchanged', async t => {
   const { factory, modes } = observedFactory();
   const name = 'synthetic-vocabulary-review';
   const store = createWordStore({ name, indexedDB: factory });
   t.after(() => store.close());
   const expected = [
-    entry(1, { word: 'zulu', translation: 'Shared 中文' }),
+    entry(1, { word: 'zulu', translation: 'Shared 中文', categoryIds: [1] }),
     entry(2, { word: 'alpha', translation: '' }),
-    entry(3, { word: 'beta', translation: 'Shared English only', created: exportedAt }),
+    entry(3, { word: 'beta', translation: 'Shared English only', created: exportedAt, categoryIds: [1] }),
     entry(4, { word: 'gamma', translation: 'Outside the filter; é; 日本語' }),
   ];
-  const dated = expected.map(({ id: _id, ...value }) => value);
-  assert.deepEqual(await store.importEntries(dated), { imported: 4, updated: 0, skipped: 0 });
-  const entries = await store.list();
-  const original = structuredClone(entries);
+  const batch = {
+    categories: ['Reading', 'Unused'],
+    entries: expected.map(({ id: _id, categoryIds, ...value }) => ({ ...value, categories: categoryIds.length ? ['Reading'] : [] })),
+  };
+  assert.deepEqual(await store.importEntries(batch), { imported: 4, updated: 0, skipped: 0, classified: 2, categoriesCreated: 2 });
+  const snapshot = await store.snapshot();
+  const entries = snapshot.words;
+  const original = structuredClone(snapshot);
   const before = await databaseSnapshot(factory, name);
-  assert.deepEqual(before, { schema, raw: expected });
-  const backup = serializeBackup(entries, exportedAt);
-  assert.deepEqual(JSON.parse(backup), { format: 'wordbook', version: 1, exportedAt, entries: dated });
-  assert.deepEqual(parseBackup(backup), dated);
+  assert.deepEqual(before, {
+    schema, raw: expected,
+    rawCategories: [{ id: 1, name: 'Reading', normalizedName: 'reading' }, { id: 2, name: 'Unused', normalizedName: 'unused' }],
+  });
+  const backup = serializeBackup(snapshot, exportedAt);
+  assert.deepEqual(JSON.parse(backup), { format: 'wordbook', version: 2, exportedAt, ...batch });
+  assert.deepEqual(parseBackup(backup), batch);
   modes.length = 0;
 
   const all = selectLibraryEntries(entries, '', 'recent');
   assert.deepEqual(ids(all), [4, 3, 2, 1]);
-  const visible = selectLibraryEntries(entries, ' SHARED ', 'alphabetical');
+  const visible = selectLibraryEntries(entries, ' SHARED ', 'alphabetical', 1);
   assert.deepEqual(ids(visible), [3, 1]);
+  assert.deepEqual(ids(selectLibraryEntries(entries, '', 'recent', 'uncategorized')), [4, 2]);
+  assert.deepEqual(selectLibraryEntries(entries, '', 'recent', 2), []);
   assert.deepEqual(selectLibraryEntries(entries, '[no results]', 'recent'), []);
   assert.deepEqual(eligiblePracticeEntries(selectLibraryEntries(entries, 'alpha', 'recent')), []);
   assert.deepEqual(await databaseSnapshot(factory, name), before);
-  assert.equal(serializeBackup(await store.list(), exportedAt), backup);
+  assert.equal(serializeBackup(await store.snapshot(), exportedAt), backup);
 
   const question = start(samplePracticeEntries(visible, () => 0));
   const skipped = answer(navigate(question, 'next'), false);
@@ -689,15 +775,16 @@ test('library views, navigation and rating edits leave exact IndexedDB v1 record
   assert.deepEqual(ids(retried.cards), [3]);
   const final = finish(retried, [true]);
   assert.deepEqual(practiceReducer(final, { type: 'exit' }), { phase: 'idle', session: 1 });
-  assert.deepEqual(entries, original);
+  assert.deepEqual(snapshot, original);
   await store.close();
-  assert.deepEqual(await store.list(), original);
+  assert.deepEqual(await store.list(), original.words);
+  assert.deepEqual(await store.snapshot(), original);
   assert.deepEqual(await databaseSnapshot(factory, name), before);
-  assert.deepEqual(await factory.databases(), [{ name, version: 1 }]);
-  assert.equal(serializeBackup(await store.list(), exportedAt), backup);
+  assert.deepEqual(await factory.databases(), [{ name, version: 2 }]);
+  assert.equal(serializeBackup(await store.snapshot(), exportedAt), backup);
   assert.ok(modes.every(mode => mode === 'readonly'), 'View, practice, and exports must not open write transactions');
   for (const value of (await databaseSnapshot(factory, name)).raw)
-    assert.deepEqual(Object.keys(value).sort(), ['created', 'definition', 'example', 'id', 'phonetic', 'pos', 'source', 'translation', 'word']);
+    assert.deepEqual(Object.keys(value).sort(), ['categoryIds', 'created', 'definition', 'example', 'id', 'phonetic', 'pos', 'source', 'translation', 'word']);
 });
 
 test('external deletion and import never change navigable snapshots or retries, resurrect entries, or write edited ratings', async t => {
@@ -706,24 +793,37 @@ test('external deletion and import never change navigable snapshots or retries, 
   const store = createWordStore({ name, indexedDB: factory });
   const peer = createWordStore({ name, indexedDB: factory });
   t.after(() => Promise.all([store.close(), peer.close()]));
-  await store.importEntries(pool(3));
-  const entries = selectLibraryEntries(await store.list(), '', 'alphabetical');
+  await store.importEntries({
+    categories: ['Shared topic'],
+    entries: pool(3).map(({ id: _id, categoryIds: _categoryIds, ...value }) => ({ ...value, categories: ['Shared topic'] })),
+  });
+  const entries = selectLibraryEntries(await store.list(), '', 'alphabetical', 1);
   const snapshot = structuredClone(entries);
   const question = start(samplePracticeEntries(entries, () => 0));
   let state = answer(question, false);
 
+  await peer.deleteCategory(1);
   for (const value of entries) await peer.remove(value.id);
-  await peer.importEntries([
-    { ...entry(1), translation: 'Replacement for the same word', created: exportedAt },
-    entry(4, { word: 'new import', translation: 'A new eligible answer', created: exportedAt }),
-  ]);
-  const refreshed = await store.list();
+  await peer.importEntries({
+    categories: ['Replacement topic'],
+    entries: [
+      { ...entry(1), translation: 'Replacement for the same word', created: exportedAt },
+      entry(4, { word: 'new import', translation: 'A new eligible answer', created: exportedAt }),
+    ].map(({ id: _id, categoryIds: _categoryIds, ...value }) => ({ ...value, categories: ['Replacement topic'] })),
+  });
+  const refreshedSnapshot = await store.snapshot();
+  const refreshed = refreshedSnapshot.words;
   assert.deepEqual(ids(refreshed), [5, 4]);
   assert.equal(refreshed[1].word, snapshot[0].word);
+  assert.deepEqual(refreshedSnapshot.categories, [{ id: 2, name: 'Replacement topic' }]);
+  assert.ok(refreshed.every(value => value.categoryIds.length === 1 && value.categoryIds[0] === 2));
   const afterExternal = await databaseSnapshot(factory, name);
-  const backup = serializeBackup(refreshed, exportedAt);
+  const backup = serializeBackup(refreshedSnapshot, exportedAt);
   modes.length = 0;
-  entries.forEach(value => Object.assign(value, entry(20, { translation: '' })));
+  entries.forEach(value => {
+    value.categoryIds.length = 0;
+    Object.assign(value, entry(20, { translation: '' }));
+  });
   entries.length = 0;
   assert.deepEqual(question.cards, snapshot);
   const firstReview = navigate(state, 'previous');
@@ -747,6 +847,6 @@ test('external deletion and import never change navigable snapshots or retries, 
   assert.deepEqual(fresh.cards, refreshed);
   assert.deepEqual(await databaseSnapshot(factory, name), afterExternal);
   assert.deepEqual(afterExternal.schema, schema);
-  assert.equal(serializeBackup(await store.list(), exportedAt), backup);
+  assert.equal(serializeBackup(await store.snapshot(), exportedAt), backup);
   assert.ok(modes.every(mode => mode === 'readonly'), 'Only the explicit peer changes may write');
 });
