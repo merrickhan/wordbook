@@ -68,7 +68,7 @@ WORDBOOK_PASSWORD=a-long-passphrase-you-will-type-to-sign-in
 WORDBOOK_SESSION_SECRET=at-least-32-random-characters
 ```
 
-- `DATABASE_URL` (or `POSTGRES_URL`) can point at a local Postgres or at the same hosted database Vercel uses. After linking the project with the Vercel CLI, `vercel env pull .env.local` writes the deployed values into this file.
+- `DATABASE_URL` (also accepted as `WORDBOOK_DATABASE_URL` or `POSTGRES_URL`) can point at a local Postgres or at the same hosted database Vercel uses. After linking the project with the Vercel CLI, `vercel env pull .env.local` writes the deployed values into this file.
 - `WORDBOOK_PASSWORD` must be at least 8 characters; use a long passphrase, because the site is reachable from the internet. `WORDBOOK_SESSION_SECRET` must be at least 32 characters, for example from `openssl rand -base64 48`.
 - Tables are created automatically on the first API request; there is no separate migration step.
 
@@ -97,7 +97,7 @@ For routing, validate default/unknown hashes, direct Add word visits, root/subpa
 ## 2. Deploy to Vercel
 
 1. Push the repository to GitHub. In Vercel, choose **Add New → Project** and import it. The included `vercel.json` sets the Vite framework, `pnpm build`, the `dist` output and the `/api/*` rewrite, so the defaults can stay as they are.
-2. Add a Postgres database: in the project, open **Storage** (or the **Marketplace**), create a Postgres database such as **Neon** and connect it to the project. This adds `DATABASE_URL` (or `POSTGRES_URL`) to the project's environment variables.
+2. Add a Postgres database: in the project, open **Storage** (or the **Marketplace**), create a Postgres database such as **Neon** and connect it to the project. This adds the connection string to the project's environment variables, named after the prefix you choose: `WORDBOOK` (giving `WORDBOOK_DATABASE_URL`), `DATABASE` or `POSTGRES` all work. Connect it to both **Production** and **Preview**.
 3. Under **Settings → Environment Variables**, add `WORDBOOK_PASSWORD` and `WORDBOOK_SESSION_SECRET` (requirements above) for Production, and for Preview if you use preview deployments.
 4. Deploy (or redeploy after adding variables). Open the production URL and sign in.
 

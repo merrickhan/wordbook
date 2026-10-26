@@ -5,8 +5,9 @@ import { createPgDatabase } from './pg-database.js';
 export type Environment = Record<string, string | undefined>;
 
 export function createHandler(env: Environment): (request: Request) => Promise<Response> {
-  // Vercel's Postgres integrations (such as Neon) expose DATABASE_URL or POSTGRES_URL.
-  const connectionString = env.DATABASE_URL || env.POSTGRES_URL;
+  // Vercel's Postgres integrations (such as Neon) name variables after the prefix chosen when the
+  // database is connected; accept the app-specific prefix and the two common defaults.
+  const connectionString = env.WORDBOOK_DATABASE_URL || env.DATABASE_URL || env.POSTGRES_URL;
   const app = connectionString
     ? createApp({
       db: createPgDatabase(connectionString),
@@ -16,7 +17,7 @@ export function createHandler(env: Environment): (request: Request) => Promise<R
     : undefined;
   return async request => {
     if (app) return app.handle(request);
-    console.error('DATABASE_URL (or POSTGRES_URL) is not set');
+    console.error('WORDBOOK_DATABASE_URL, DATABASE_URL or POSTGRES_URL must be set');
     return Response.json({ error: { code: 'serverMisconfigured' } }, { status: 500, headers: { 'cache-control': 'no-store' } });
   };
 }
