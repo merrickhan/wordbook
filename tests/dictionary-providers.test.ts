@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDBFactory } from 'fake-indexeddb';
 import { serializeBackup } from '../src/backup';
 import {
   dictionaryProviders, DEFAULT_DICTIONARY_PROVIDER, isDictionaryProvider,
@@ -8,7 +7,8 @@ import {
 } from '../src/dictionary-providers';
 import { sample } from '../src/entry';
 import type { DatedEntry } from '../src/entry';
-import { createWordStore, databaseName } from '../src/storage';
+import { databaseName } from '../src/namespace';
+import { createTestDatabase, createTestStore } from './helpers/database';
 import { readLocale, writeLocale } from '../src/i18n';
 
 function memoryStorage() {
@@ -225,8 +225,8 @@ test('legacy cleanup is repeatable with absent, singly present and reintroduced 
 test('legacy cleanup preserves persisted IDs, descending order, all entry fields and identical fixed-time backups', async t => {
   const namespace = databaseName('https://example.com/wordbook/index.html?version=3#top');
   const exportedAt = '2026-09-28T08:00:00.000Z';
-  const factory = new IDBFactory();
-  const store = createWordStore({ name: namespace, indexedDB: factory, now: () => new Date(exportedAt) });
+  const db = await createTestDatabase();
+  const store = await createTestStore({ db, now: () => new Date(exportedAt) });
   t.after(() => store.close());
   const values: DatedEntry[] = [
     { ...sample, source: 'Historical source: 旧服务翻译记录 | 用户保留的调查笔记', created: '2024-02-29T12:34:56.789Z' },
@@ -264,5 +264,4 @@ test('legacy cleanup preserves persisted IDs, descending order, all entry fields
   assert.deepEqual(after, before);
   assert.deepEqual(after.words.map(value => value.id), [3, 2]);
   assert.equal(serializeBackup(after, exportedAt), backup);
-  assert.deepEqual(await factory.databases(), [{ name: namespace, version: 2 }]);
 });

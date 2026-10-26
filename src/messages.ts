@@ -24,24 +24,24 @@ export const defaultMessages = {
   categorySaved: '分类已保存。',
   categoryDeleted: '分类及其关联已移除，所有单词保留。',
   backupInvalidId: '词条编号无效，无法导出备份。',
-  storageUnavailable: '无法访问或保存本地词库，请检查浏览器存储设置后重试。',
-  storageQuota: '浏览器存储空间不足，未保存任何更改。请释放空间后重试。',
-  storageDenied: '浏览器禁止访问本地词库，请检查隐私和存储权限设置后重试。',
-  storageVersion: '本地词库版本不兼容，请关闭其他标签页并更新或刷新页面后重试。',
-  storageInactive: '本地词库连接已失效，请重试。',
-  storageAborted: '本地词库操作已中止，未保存任何更改。请重试。',
-  storageConstraint: '本地词库数据约束冲突，未保存任何更改。请重试。',
-  storageClosed: '本地词库连接已关闭，请重试。',
-  storageUnsupported: '此浏览器不支持本地词库存储，请换用支持 IndexedDB 的浏览器。',
-  storageBlocked: '本地词库被其他标签页占用，请关闭其他 Wordbook 页面后重试。',
-  storageInvalidRecord: '本地词库记录格式无效，请保留现有数据并检查备份。',
+  storageUnavailable: '无法访问或保存词库，请稍后重试。',
+  storageConstraint: '词库数据约束冲突，未保存任何更改。请重试。',
+  storageInvalidRecord: '词库记录格式无效，请保留现有数据并检查备份。',
   invalidClock: '无法获取有效的当前时间，请检查设备时间后重试。',
-  storageInvalidId: '词条编号无效，无法操作本地词库。',
+  storageInvalidId: '词条编号无效，无法操作词库。',
+  authRequired: '请先登录。如果刚才已登录，可能是登录已过期。',
+  loginFailed: '密码不正确。',
+  loginRateLimited: '登录失败次数过多，请 15 分钟后再试。',
+  serverUnreachable: '无法连接服务器，请检查网络后重试。',
+  serverMisconfigured: '服务器尚未配置好数据库或访问密码，请检查部署的环境变量。',
+  requestRejected: '请求被拒绝，请刷新页面后重试。',
+  invalidRequest: '请求无效，请刷新页面后重试。',
+  requestTooLarge: '请求内容过大。',
   importEntriesInvalid: '导入的词条必须是数组。',
   operationBusy: '请等待当前保存、删除、分类或备份操作完成。',
   manualInvalidWord: '请先输入有效的英语单词或短语（最多 80 个字符）。',
   storeNotReady: '生词本尚未打开，请先重新加载。',
-  saved: '已保存到当前浏览器的生词本。',
+  saved: '已保存到生词本。',
   exported: '备份已生成并开始下载，请确认文件已保存。',
   importFileTooLarge: '备份文件不能超过 10 MiB。',
   speechUnsupported: '当前浏览器不支持朗读。',
@@ -93,6 +93,40 @@ export class MessageError extends Error {
   constructor(readonly detail: Message, options?: ErrorOptions) {
     super(renderMessage(defaultMessages, detail), options);
     this.name = 'MessageError';
+  }
+}
+
+function count(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Accepts only known message shapes, such as those returned by the API, and rejects everything else. */
+export function parseMessage(value: unknown, depth = 0): Message | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { code, params } = value as { code?: unknown; params?: unknown };
+  if (typeof code !== 'string' || !Object.hasOwn(defaultMessages, code)) return undefined;
+  const p = (params && typeof params === 'object' && !Array.isArray(params) ? params : {}) as Record<string, unknown>;
+  switch (code) {
+    case 'duplicateWord':
+    case 'deleted':
+      return typeof p.word === 'string' ? { code, params: { word: p.word } } : undefined;
+    case 'imported': {
+      const { imported, updated, skipped, classified, categoriesCreated } = p;
+      return count(imported) && count(updated) && count(skipped) && count(classified) && count(categoriesCreated)
+        ? { code, params: { imported, updated, skipped, classified, categoriesCreated } } : undefined;
+    }
+    case 'categoriesUpdated': {
+      const { changed, unchanged, missing } = p;
+      return count(changed) && count(unchanged) && count(missing) ? { code, params: { changed, unchanged, missing } } : undefined;
+    }
+    case 'loadFailed':
+    case 'importFailed':
+    case 'deleteFailed': {
+      const reason = depth < 2 ? parseMessage(p.reason, depth + 1) : undefined;
+      return reason ? { code, params: { reason } } : undefined;
+    }
+    default:
+      return { code: code as PlainCode };
   }
 }
 

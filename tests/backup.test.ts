@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDBFactory } from 'fake-indexeddb';
 import { MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES, parseBackup, serializeBackup } from '../src/backup';
 import { MAX_CATEGORIES, MAX_CATEGORY_NAME_LENGTH } from '../src/categories';
 import type { Category, ImportBatch, LibrarySnapshot } from '../src/categories';
 import { createEntry, sample, validateCreated } from '../src/entry';
 import type { DatedEntry, StoredEntry } from '../src/entry';
 import { MessageError } from '../src/messages';
-import { createWordStore } from '../src/storage';
+import { createTestDatabase, createTestStore } from './helpers/database';
 
 const exportedAt = '2026-09-28T08:00:00.000Z';
 const created = '2024-02-29T12:34:56.789Z';
@@ -66,7 +65,7 @@ test('v1 reading and v2 round trips preserve all seven fields, dates and sources
   const parsed = parseBackup(text);
   assert.deepEqual(parsed, unclassified(values));
   assert.deepEqual(parseBackup(JSON.stringify(envelope(values))), parsed);
-  const store = createWordStore({ name: 'phonetic-backup', indexedDB: new IDBFactory(), now: () => new Date(created) });
+  const store = await createTestStore({ now: () => new Date(created) });
   t.after(() => store.close());
   assert.deepEqual(await store.importEntries(parsed), { imported: 5, updated: 0, skipped: 0, classified: 0, categoriesCreated: 0 });
   await store.close();
@@ -125,7 +124,7 @@ test('import assigns new IDs while preserving creation times and relative order 
     { ...stored, id: 4, word: 'first', created: '2025-01-01T00:00:00.000Z' },
     { ...stored, id: 50, word: 'second' },
   ];
-  const store = createWordStore({ name: 'restored', indexedDB: new IDBFactory() });
+  const store = await createTestStore();
   t.after(() => store.close());
   const seed = await store.save(createEntry('existing'));
   const parsed = parseBackup(serializeBackup(snapshot(originals), exportedAt));
@@ -140,7 +139,7 @@ test('import assigns new IDs while preserving creation times and relative order 
 });
 
 test('exports exclude deleted entries and earlier backups restore original fields with new IDs while skipping survivors', async t => {
-  const store = createWordStore({ name: 'removed-backup', indexedDB: new IDBFactory(), now: () => new Date(exportedAt) });
+  const store = await createTestStore({ now: () => new Date(exportedAt) });
   t.after(() => store.close());
   const values: DatedEntry[] = [
     { ...createEntry('first'), translation: '合成首项', created: '2020-01-01T00:00:00.000Z' },
@@ -177,10 +176,9 @@ test('exports exclude deleted entries and earlier backups restore original field
   assert.deepEqual(JSON.parse(serializeBackup(await store.snapshot(), exportedAt)), envelopeV2(unclassified([values[0], values[2], values[1]]).entries));
 });
 
-test('a v1 backup overwrites complete fields and opaque sources with stable IDs in DB2, then exports as v2 without IDs', async t => {
-  const factory = new IDBFactory();
-  const name = 'overwrite-backup';
-  const store = createWordStore({ name, indexedDB: factory, now: () => new Date(exportedAt) });
+test('a v1 backup overwrites complete fields and opaque sources with stable IDs in the database, then exports as v2 without IDs', async t => {
+  const db = await createTestDatabase();
+  const store = await createTestStore({ db, now: () => new Date(exportedAt) });
   t.after(() => store.close());
   const temporary = await store.save(createEntry('temporary'));
   await store.remove(temporary.id);
@@ -219,7 +217,7 @@ test('a v1 backup overwrites complete fields and opaque sources with stable IDs 
   assert.deepEqual(await store.importEntries(parsed, { overwriteExisting: true }),
     { imported: 1, updated: 2, skipped: 1, classified: 0, categoriesCreated: 0 });
   await store.close();
-  const reopened = createWordStore({ name, indexedDB: factory });
+  const reopened = await createTestStore({ db });
   t.after(() => reopened.close());
   const restored = await reopened.list();
   const expected = [
@@ -228,7 +226,6 @@ test('a v1 backup overwrites complete fields and opaque sources with stable IDs 
   ];
   assert.deepEqual(restored, expected);
   assert.deepEqual(restored.map(value => value.id), [5, 4, 3, 2]);
-  assert.deepEqual(await factory.databases(), [{ name, version: 2 }]);
   const { id: _id, categoryIds: _categories, ...unrelatedEntry } = unrelated;
   const expectedBatch = unclassified([replacement, unrelatedEntry, blank, added]);
   const serialized = serializeBackup(await reopened.snapshot(), exportedAt);
@@ -358,7 +355,7 @@ test('v2 exports a normalized sorted name directory including empty categories a
 
 test('portable v2 names resolve to destination IDs and import unions categories independently of lexical overwrite', async t => {
   for (const overwriteExisting of [undefined, false, true]) await t.test(String(overwriteExisting), async t => {
-    const store = createWordStore({ name: 'portable-' + overwriteExisting, indexedDB: new IDBFactory(), now: () => new Date(exportedAt) });
+    const store = await createTestStore({ now: () => new Date(exportedAt) });
     t.after(() => store.close());
     const local = await store.createCategory('Local');
     const travel = await store.createCategory('tRaVeL');
@@ -409,7 +406,7 @@ test('portable v2 names resolve to destination IDs and import unions categories 
 });
 
 test('empty categories persist and count independently of words, while restoring an old name is not rename synchronization', async t => {
-  const store = createWordStore({ name: 'empty-categories', indexedDB: new IDBFactory() });
+  const store = await createTestStore();
   t.after(() => store.close());
   const batch = parseBackup(JSON.stringify(envelopeV2([], ['Original'])));
   assert.deepEqual(await store.importEntries(batch), { imported: 0, updated: 0, skipped: 0, classified: 0, categoriesCreated: 1 });
@@ -426,7 +423,7 @@ test('empty categories persist and count independently of words, while restoring
 
 test('v1 category-looking entry extras cannot clear or add associations in either import mode', async t => {
   for (const overwriteExisting of [false, true]) await t.test(String(overwriteExisting), async t => {
-    const store = createWordStore({ name: 'legacy-categories-' + overwriteExisting, indexedDB: new IDBFactory() });
+    const store = await createTestStore();
     t.after(() => store.close());
     const local = await store.createCategory('Local');
     const selected = await store.createCategory('Selected');
@@ -460,7 +457,7 @@ test('v2 requires valid names, a unique normalized directory and declared refere
 });
 
 test('invalid references on preserved matches and later duplicate words reject the whole backup without creating categories', async t => {
-  const store = createWordStore({ name: 'invalid-reference', indexedDB: new IDBFactory() });
+  const store = await createTestStore();
   t.after(() => store.close());
   await store.save(sample);
   const before = await store.snapshot();

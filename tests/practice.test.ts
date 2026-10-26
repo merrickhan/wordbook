@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDBFactory } from 'fake-indexeddb';
 import { parseBackup, serializeBackup } from '../src/backup';
 import type { StoredEntry } from '../src/entry';
 import { paginateLibraryEntries, selectLibraryEntries } from '../src/library';
@@ -8,7 +7,7 @@ import {
   PRACTICE_LIMIT, eligiblePracticeEntries, initialPracticeState, practiceCounts, practiceReducer, samplePracticeEntries,
   type ActivePractice, type PracticeAction, type PracticeState,
 } from '../src/practice';
-import { createWordStore } from '../src/storage';
+import { createTestDatabase, createTestStore, dumpTables } from './helpers/database';
 
 const created = '2024-02-29T12:34:56.789Z';
 const exportedAt = '2026-09-28T08:00:00.000Z';
@@ -657,75 +656,10 @@ test('start snapshots card content and category IDs independently through naviga
   assert.deepEqual(retried.progress, freshProgress(2));
 });
 
-function observedFactory() {
-  const factory = new IDBFactory();
-  const modes: IDBTransactionMode[] = [];
-  const open = factory.open.bind(factory);
-  factory.open = (name, version) => {
-    const request = open(name, version);
-    request.addEventListener('success', () => {
-      const db = request.result;
-      const transact = db.transaction.bind(db);
-      db.transaction = (...args: Parameters<IDBDatabase['transaction']>) => {
-        const transaction = transact(...args);
-        modes.push(transaction.mode);
-        return transaction;
-      };
-    });
-    return request;
-  };
-  return { factory, modes };
-}
-
-async function databaseSnapshot(factory: IDBFactory, name: string) {
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = factory.open(name, 2);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error('Unexpected blocked synthetic database'));
-  });
-  try {
-    const transaction = db.transaction(['words', 'categories'], 'readonly');
-    const words = transaction.objectStore('words');
-    const categories = transaction.objectStore('categories');
-    const describe = (store: IDBObjectStore) => ({
-      keyPath: store.keyPath, autoIncrement: store.autoIncrement,
-      indexes: [...store.indexNames].map(name => {
-        const index = store.index(name);
-        return { name, keyPath: index.keyPath, unique: index.unique, multiEntry: index.multiEntry };
-      }),
-    });
-    const schema = { version: db.version, stores: [...db.objectStoreNames], words: describe(words), categories: describe(categories) };
-    const readAll = <T>(store: IDBObjectStore) => new Promise<T[]>((resolve, reject) => {
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const [raw, rawCategories] = await Promise.all([
-      readAll<StoredEntry>(words), readAll<{ id: number; name: string; normalizedName: string }>(categories),
-    ]);
-    return { schema, raw, rawCategories };
-  } finally {
-    db.close();
-  }
-}
-
-const schema = {
-  version: 2, stores: ['categories', 'words'],
-  words: {
-    keyPath: 'id', autoIncrement: true,
-    indexes: [{ name: 'word', keyPath: 'word', unique: true, multiEntry: false }],
-  },
-  categories: {
-    keyPath: 'id', autoIncrement: true,
-    indexes: [{ name: 'normalizedName', keyPath: 'normalizedName', unique: true, multiEntry: false }],
-  },
-};
-
-test('library views, navigation and rating edits leave exact IndexedDB v2 records and whole-store v2 backups unchanged', async t => {
-  const { factory, modes } = observedFactory();
-  const name = 'synthetic-vocabulary-review';
-  const store = createWordStore({ name, indexedDB: factory });
+test('library views, navigation and rating edits leave exact database rows and whole-store v2 backups unchanged', async t => {
+  const db = await createTestDatabase();
+  const { modes } = db;
+  const store = await createTestStore({ db });
   t.after(() => store.close());
   const expected = [
     entry(1, { word: 'zulu', translation: 'Shared 中文', categoryIds: [1] }),
@@ -741,10 +675,11 @@ test('library views, navigation and rating edits leave exact IndexedDB v2 record
   const snapshot = await store.snapshot();
   const entries = snapshot.words;
   const original = structuredClone(snapshot);
-  const before = await databaseSnapshot(factory, name);
+  const before = await dumpTables(db);
   assert.deepEqual(before, {
-    schema, raw: expected,
-    rawCategories: [{ id: 1, name: 'Reading', normalizedName: 'reading' }, { id: 2, name: 'Unused', normalizedName: 'unused' }],
+    words: expected.map(({ categoryIds: _categoryIds, ...value }) => value),
+    categories: [{ id: 1, name: 'Reading', normalized_name: 'reading' }, { id: 2, name: 'Unused', normalized_name: 'unused' }],
+    links: [{ word_id: 1, category_id: 1 }, { word_id: 3, category_id: 1 }],
   });
   const backup = serializeBackup(snapshot, exportedAt);
   assert.deepEqual(JSON.parse(backup), { format: 'wordbook', version: 2, exportedAt, ...batch });
@@ -759,7 +694,7 @@ test('library views, navigation and rating edits leave exact IndexedDB v2 record
   assert.deepEqual(selectLibraryEntries(entries, '', 'recent', 2), []);
   assert.deepEqual(selectLibraryEntries(entries, '[no results]', 'recent'), []);
   assert.deepEqual(eligiblePracticeEntries(selectLibraryEntries(entries, 'alpha', 'recent')), []);
-  assert.deepEqual(await databaseSnapshot(factory, name), before);
+  assert.deepEqual(await dumpTables(db), before);
   assert.equal(serializeBackup(await store.snapshot(), exportedAt), backup);
 
   const question = start(samplePracticeEntries(visible, () => 0));
@@ -779,19 +714,18 @@ test('library views, navigation and rating edits leave exact IndexedDB v2 record
   await store.close();
   assert.deepEqual(await store.list(), original.words);
   assert.deepEqual(await store.snapshot(), original);
-  assert.deepEqual(await databaseSnapshot(factory, name), before);
-  assert.deepEqual(await factory.databases(), [{ name, version: 2 }]);
+  assert.deepEqual(await dumpTables(db), before);
   assert.equal(serializeBackup(await store.snapshot(), exportedAt), backup);
-  assert.ok(modes.every(mode => mode === 'readonly'), 'View, practice, and exports must not open write transactions');
-  for (const value of (await databaseSnapshot(factory, name)).raw)
-    assert.deepEqual(Object.keys(value).sort(), ['categoryIds', 'created', 'definition', 'example', 'id', 'phonetic', 'pos', 'source', 'translation', 'word']);
+  assert.ok(modes.every(mode => mode === 'read'), 'View, practice, and exports must not open write transactions');
+  for (const value of (await dumpTables(db)).words)
+    assert.deepEqual(Object.keys(value).sort(), ['created', 'definition', 'example', 'id', 'phonetic', 'pos', 'source', 'translation', 'word']);
 });
 
 test('external deletion and import never change navigable snapshots or retries, resurrect entries, or write edited ratings', async t => {
-  const { factory, modes } = observedFactory();
-  const name = 'synthetic-external-refresh';
-  const store = createWordStore({ name, indexedDB: factory });
-  const peer = createWordStore({ name, indexedDB: factory });
+  const db = await createTestDatabase();
+  const { modes } = db;
+  const store = await createTestStore({ db });
+  const peer = await createTestStore({ db });
   t.after(() => Promise.all([store.close(), peer.close()]));
   await store.importEntries({
     categories: ['Shared topic'],
@@ -817,7 +751,7 @@ test('external deletion and import never change navigable snapshots or retries, 
   assert.equal(refreshed[1].word, snapshot[0].word);
   assert.deepEqual(refreshedSnapshot.categories, [{ id: 2, name: 'Replacement topic' }]);
   assert.ok(refreshed.every(value => value.categoryIds.length === 1 && value.categoryIds[0] === 2));
-  const afterExternal = await databaseSnapshot(factory, name);
+  const afterExternal = await dumpTables(db);
   const backup = serializeBackup(refreshedSnapshot, exportedAt);
   modes.length = 0;
   entries.forEach(value => {
@@ -845,8 +779,7 @@ test('external deletion and import never change navigable snapshots or retries, 
   assert.equal(fresh.phase, 'card');
   assert.equal(fresh.session, 2);
   assert.deepEqual(fresh.cards, refreshed);
-  assert.deepEqual(await databaseSnapshot(factory, name), afterExternal);
-  assert.deepEqual(afterExternal.schema, schema);
+  assert.deepEqual(await dumpTables(db), afterExternal);
   assert.equal(serializeBackup(await store.snapshot(), exportedAt), backup);
-  assert.ok(modes.every(mode => mode === 'readonly'), 'Only the explicit peer changes may write');
+  assert.ok(modes.every(mode => mode === 'read'), 'Only the explicit peer changes may write');
 });
