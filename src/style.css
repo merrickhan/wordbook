@@ -250,6 +250,35 @@ main {
   margin-inline: auto;
 }
 
+.sign-in {
+  max-width: 400px;
+  margin: 24px auto 0;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--canvas);
+}
+
+.sign-in h1 {
+  margin: 0 0 4px;
+  font-size: var(--text-heading);
+  font-weight: 600;
+}
+
+.sign-in form {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.sign-in label {
+  display: grid;
+  gap: 6px;
+}
+
+.sign-in .message {
+  margin: 0;
+}
+
 .page-heading {
   display: flex;
   flex-wrap: wrap;
@@ -1082,7 +1111,8 @@ select:disabled {
   text-underline-offset: 3px;
 }
 
-.route-page[hidden] {
+.route-page[hidden],
+.workspace[hidden] {
   display: none;
 }
 

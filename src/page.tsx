@@ -1,4 +1,5 @@
-// Keep the notebook in browser storage; only autofill requests external dictionaries and translation.
+// The notebook lives in the server database behind a single-owner sign-in; autofill still calls
+// external dictionaries and translation directly from the browser.
 import { useState, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useCallback, type MouseEvent } from 'react';
 import {
   Search,
@@ -9,11 +10,13 @@ import {
   Download,
   Upload,
   Trash2,
+  LogOut,
   X,
 } from 'lucide-react';
 import { createEntry, sample, validWord, type Entry, type StoredEntry } from './entry';
 import { hasMyMemorySource, lookup as queryWord } from './vocabulary';
-import { createWordStore, databaseName } from './storage';
+import { createApiStore } from './api-store';
+import { databaseName } from './namespace';
 import { MAX_BACKUP_BYTES, parseBackup, serializeBackup } from './backup';
 import { errorMessage, MessageError, type Message } from './messages';
 import { ui, formatMessage, readLocale, writeLocale, type Locale } from './i18n';
@@ -28,7 +31,9 @@ import { CategoryPicker } from './category-picker';
 import { CategoryManager } from './category-manager';
 
 const dbNamespace = databaseName(window.location.href);
-const store = createWordStore({ name: dbNamespace });
+let handleUnauthorized: () => void = () => {};
+const store = createApiStore({ onUnauthorized: () => handleUnauthorized() });
+type AuthState = 'checking' | 'signedOut' | 'signedIn';
 type Operation = '' | 'save' | 'delete' | 'import' | 'export' | 'category' | 'classify';
 type CategoryTarget = 'draft' | 'import' | 'bulk';
 type NavigationTarget = 'words' | 'add' | 'capture' | 'import' | 'practice-return';
@@ -44,6 +49,12 @@ export default function Home() {
     [loading, setLoading] = useState(true),
     [loadError, setLoadError] = useState<Message | null>(null),
     [storeReady, setStoreReady] = useState(false);
+  const [auth, setAuth] = useState<AuthState>('checking');
+  const authRef = useRef<AuthState>('checking');
+  const [password, setPassword] = useState(''),
+    [signingIn, setSigningIn] = useState(false),
+    [signInError, setSignInError] = useState<Message | null>(null);
+  const passwordInput = useRef<HTMLInputElement>(null);
   const [input, setInput] = useState(''),
     [draft, setDraft] = useState<Entry | null>(null),
     [warnings, setWarnings] = useState<Message[]>([]),
@@ -255,11 +266,15 @@ export default function Home() {
       if (typeof categoryFilterRef.current === 'number' && !categoryIds.has(categoryFilterRef.current))
         changeCategoryFilter('all');
       setLoadError(null);
+      authRef.current = 'signedIn';
+      setAuth('signedIn');
       ready.current = true;
       setStoreReady(true);
     } catch (error) {
       if (!active.current || request !== listRequest.current) return;
-      setLoadError({ code: 'loadFailed', params: { reason: errorMessage(error) } });
+      // A missing session switches to the sign-in form through handleUnauthorized instead of an error.
+      const reason = errorMessage(error);
+      setLoadError(reason.code === 'authRequired' ? null : { code: 'loadFailed', params: { reason } });
       ready.current = false;
       setStoreReady(false);
     } finally {
@@ -269,10 +284,18 @@ export default function Home() {
 
   useEffect(() => {
     active.current = true;
+    handleUnauthorized = () => {
+      if (!active.current) return;
+      authRef.current = 'signedOut';
+      setAuth('signedOut');
+      ready.current = false;
+      setStoreReady(false);
+      setLoadError(null);
+    };
     removeLegacyTranslationPreferences(dbNamespace, () => window.localStorage);
     void refresh();
     const onFocus = () => {
-      if (!operationLock.current) void refresh(true);
+      if (!operationLock.current && authRef.current === 'signedIn') void refresh(true);
     };
     const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
     window.addEventListener('focus', onFocus);
@@ -284,8 +307,40 @@ export default function Home() {
       queryController.current?.abort();
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
+      handleUnauthorized = () => {};
     };
   }, []);
+
+  useEffect(() => {
+    if (auth === 'signedOut') passwordInput.current?.focus({ preventScroll: true });
+  }, [auth]);
+
+  async function signIn() {
+    if (signingIn || !password) return;
+    setSigningIn(true);
+    setSignInError(null);
+    try {
+      await store.login(password);
+      if (!active.current) return;
+      setPassword('');
+      setError(null);
+      await refresh();
+    } catch (error) {
+      if (active.current) setSignInError(errorMessage(error));
+    } finally {
+      if (active.current) setSigningIn(false);
+    }
+  }
+
+  async function signOut() {
+    if (operationLock.current) return;
+    try {
+      await store.logout();
+    } catch {
+      // Reloading still drops the in-memory notebook; an unreachable server keeps the cookie until it expires.
+    }
+    window.location.reload();
+  }
 
   function cancelLookup() {
     queryRequest.current++;
@@ -729,8 +784,31 @@ export default function Home() {
             </p>}
           </div>
         </div>
-        {loading && <p className="loading">{text.loading}</p>}
-        <div className="workspace">
+        {auth === 'signedOut' && (
+          <section className="sign-in" aria-labelledby="sign-in-title">
+            <h1 id="sign-in-title">{text.signInTitle}</h1>
+            <p className="field-hint">{text.signInHint}</p>
+            <form onSubmit={event => {
+              event.preventDefault();
+              void signIn();
+            }}>
+              <label>
+                {text.password}
+                <input ref={passwordInput} type="password" name="password" autoComplete="current-password"
+                  value={password} disabled={signingIn} maxLength={1024}
+                  aria-describedby={signInError ? 'sign-in-error' : undefined}
+                  onChange={event => setPassword(event.target.value)} />
+              </label>
+              {signInError && <p id="sign-in-error" className="message error" role="alert">{formatMessage(locale, signInError)}</p>}
+              <button className="primary" type="submit" disabled={signingIn || !password}>
+                {signingIn && <LoaderCircle className="spin" size={15} />}
+                {signingIn ? text.signingIn : text.signIn}
+              </button>
+            </form>
+          </section>
+        )}
+        {loading && auth !== 'signedOut' && <p className="loading">{text.loading}</p>}
+        <div className="workspace" hidden={auth === 'signedOut'}>
           <section className="route-page add-page" hidden={route !== 'add' || practice.phase !== 'idle'} aria-labelledby="add-title">
             <div className="page-heading">
               <h1 id="add-title" ref={addHeading} tabIndex={-1}>{text.addWord}</h1>
@@ -901,6 +979,9 @@ export default function Home() {
                       {operation === 'export' ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
                       {text.exportBackup}
                     </button>
+                    <button className="secondary" type="button" disabled={!!operation} onClick={() => void signOut()}>
+                      <LogOut size={15} />{text.signOut}
+                    </button>
                   </div>
                   <p className="backup-note">{text.storageNote}</p>
                 </div>
@@ -1047,7 +1128,7 @@ export default function Home() {
             )}
           </section>
         </div>
-        {route === 'words' && practice.phase !== 'idle' && (
+        {auth !== 'signedOut' && route === 'words' && practice.phase !== 'idle' && (
           <PracticePanel
             state={practice}
             locale={locale}

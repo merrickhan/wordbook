@@ -1,0 +1,50 @@
+name: CI
+
+# Vercel builds and deploys the app (static frontend plus /api functions) from its Git integration.
+# This workflow only validates changes; it no longer publishes to GitHub Pages.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '11.25.0'
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check types
+        run: pnpm check
+
+      # Database tests run against in-process Postgres (PGlite); no database service is needed.
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build static site
+        run: pnpm build

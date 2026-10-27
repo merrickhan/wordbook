@@ -1,9 +1,9 @@
-import { validateCreated, validateDatedEntry } from './entry';
+import { validateCreated, validateDatedEntry } from './entry.js';
 import {
   MAX_CATEGORIES, categoryNameKey, normalizeCategoryName, validateCategoryIds, validateImportBatch,
-} from './categories';
-import type { ImportBatch, LibrarySnapshot } from './categories';
-import { MessageError } from './messages';
+} from './categories.js';
+import type { ImportBatch, LibrarySnapshot } from './categories.js';
+import { MessageError } from './messages.js';
 
 export const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
 export const MAX_BACKUP_ENTRIES = 10000;

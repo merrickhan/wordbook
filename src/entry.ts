@@ -1,5 +1,5 @@
 // Entry types, sample data, and shared validation; drafts and backups use the same field rules.
-import { MessageError } from './messages';
+import { MessageError } from './messages.js';
 
 export type Entry = {
   word: string;

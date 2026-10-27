@@ -1,5 +1,5 @@
-import { validateDatedEntry, type DatedEntry, type StoredEntry } from './entry';
-import { MessageError } from './messages';
+import { validateDatedEntry, type DatedEntry, type StoredEntry } from './entry.js';
+import { MessageError } from './messages.js';
 
 export type Category = { id: number; name: string };
 export type LibrarySnapshot = { words: StoredEntry[]; categories: Category[] };

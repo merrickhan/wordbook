@@ -12,3 +12,6 @@ wordbook-backup-*.json
 .playwright-mcp/
 playwright-report/
 test-results/
+
+# Vercel CLI project link and pulled environment
+.vercel/

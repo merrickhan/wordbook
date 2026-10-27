@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDBFactory } from 'fake-indexeddb';
-import { defaultMessages, errorMessage, MessageError, type Message } from '../src/messages';
+import { defaultMessages, errorMessage, MessageError, parseMessage, type Message } from '../src/messages';
 import { formatDate, formatMessage, messages, readLocale, sourceLabel, ui, writeLocale } from '../src/i18n';
 import { createEntry, sample, validateCreated, validateEntry } from '../src/entry';
 import { parseBackup, serializeBackup } from '../src/backup';
-import { createWordStore, databaseName } from '../src/storage';
+import { databaseName } from '../src/namespace';
+import { createTestStore } from './helpers/database';
 
 function memoryStorage() {
   const data = new Map<string, string>();
@@ -170,9 +170,9 @@ test('deletion labels, confirmation and structured feedback preserve the word in
   assert.equal(formatMessage('zh-CN', message), '已从词本删除“don\'t”。');
   assert.equal(formatMessage('en', message), 'Deleted “don\'t” from your notebook.');
   assert.deepEqual(message, before);
-  const failure: Message = { code: 'deleteFailed', params: { reason: { code: 'storageAborted' } } };
-  assert.equal(formatMessage('zh-CN', failure), '删除失败：本地词库操作已中止，未保存任何更改。请重试。');
-  assert.equal(formatMessage('en', failure), 'Deletion failed: The local notebook operation was aborted. No changes were saved. Please try again.');
+  const failure: Message = { code: 'deleteFailed', params: { reason: { code: 'storageConstraint' } } };
+  assert.equal(formatMessage('zh-CN', failure), '删除失败：词库数据约束冲突，未保存任何更改。请重试。');
+  assert.equal(formatMessage('en', failure), 'Deletion failed: A notebook data constraint failed. No changes were saved. Please try again.');
   assert.match(formatMessage('zh-CN', { code: 'operationBusy' }), /删除/);
   assert.match(formatMessage('en', { code: 'operationBusy' }), /delete/);
 });
@@ -213,8 +213,8 @@ test('error context and cause descriptors switch language together', () => {
   const message: Message = { code: 'importFailed', params: { reason: errorMessage(error) } };
   assert.equal(formatMessage('zh-CN', message), '导入失败：备份不是有效的 JSON 文件。');
   assert.equal(formatMessage('en', message), 'Import failed: The backup is not a valid JSON file.');
-  assert.equal(formatMessage('en', { code: 'loadFailed', params: { reason: { code: 'storageQuota' } } }),
-    'Could not read your notebook: Browser storage is full. No changes were saved. Free up space and try again.');
+  assert.equal(formatMessage('en', { code: 'loadFailed', params: { reason: { code: 'storageUnavailable' } } }),
+    'Could not read your notebook: Cannot access or save your notebook right now. Please try again later.');
 });
 
 test('unknown errors use a localized fallback without displaying arbitrary diagnostics', () => {
@@ -342,7 +342,7 @@ test('formatting UI messages and sources does not alter entries or backup protoc
 });
 
 test('duplicate message parameters survive transaction abort and original entries remain intact', async t => {
-  const store = createWordStore({ name: 'messages-duplicate', indexedDB: new IDBFactory() });
+  const store = await createTestStore();
   t.after(() => store.close());
   const original = await store.save(createEntry('apple'));
   await assert.rejects(store.save({ ...sample, word: ' APPLE ' }),
@@ -350,44 +350,32 @@ test('duplicate message parameters survive transaction abort and original entrie
   assert.deepEqual(await store.list(), [original]);
 });
 
-test('browser storage error classification retains the original cause', async t => {
-  const cases = [
-    ['QuotaExceededError', 'storageQuota'], ['SecurityError', 'storageDenied'],
-    ['NotAllowedError', 'storageDenied'], ['VersionError', 'storageVersion'],
-    ['InvalidStateError', 'storageInactive'], ['TransactionInactiveError', 'storageInactive'],
-    ['AbortError', 'storageAborted'], ['ConstraintError', 'storageConstraint'],
-    ['UnknownError', 'storageUnavailable'],
-  ] as const;
-  for (const [name, code] of cases) {
-    const factory = new IDBFactory();
-    const cause = new DOMException('private diagnostic', name);
-    factory.open = () => { throw cause; };
-    const store = createWordStore({ name: 'messages-' + name, indexedDB: factory });
-    t.after(() => store.close());
-    await assert.rejects(store.list(), hasMessage({ code }, cause));
+test('API error messages parse only known codes and well-formed parameters', () => {
+  assert.deepEqual(parseMessage({ code: 'saved' }), { code: 'saved' });
+  assert.deepEqual(parseMessage({ code: 'authRequired', params: { ignored: true } }), { code: 'authRequired' });
+  assert.deepEqual(parseMessage({ code: 'duplicateWord', params: { word: 'apple' } }), { code: 'duplicateWord', params: { word: 'apple' } });
+  assert.deepEqual(parseMessage({ code: 'categoriesUpdated', params: { changed: 1, unchanged: 0, missing: 2, extra: 'x' } }),
+    { code: 'categoriesUpdated', params: { changed: 1, unchanged: 0, missing: 2 } });
+  assert.deepEqual(parseMessage({ code: 'loadFailed', params: { reason: { code: 'loginFailed' } } }),
+    { code: 'loadFailed', params: { reason: { code: 'loginFailed' } } });
+  for (const value of [
+    null, 'saved', [], {}, { code: 'toString' }, { code: '__proto__' }, { code: 'unknownCode' },
+    { code: 'duplicateWord' }, { code: 'imported', params: { imported: -1, updated: 0, skipped: 0, classified: 0, categoriesCreated: 0 } },
+    { code: 'categoriesUpdated', params: { changed: 1.5, unchanged: 0, missing: 0 } },
+    { code: 'loadFailed', params: { reason: { code: 'loadFailed', params: { reason: { code: 'loadFailed', params: { reason: { code: 'saved' } } } } } } },
+  ]) assert.equal(parseMessage(value), undefined, JSON.stringify(value));
+  for (const code of Object.keys(defaultMessages)) {
+    const parsed = parseMessage({ code, params: { word: 'w', reason: { code: 'saved' }, imported: 0, updated: 0, skipped: 0, classified: 0, categoriesCreated: 0, changed: 0, unchanged: 0, missing: 0 } });
+    assert.ok(parsed, code);
+    for (const locale of ['zh-CN', 'en'] as const) assert.equal(typeof formatMessage(locale, parsed), 'string');
   }
 });
 
-test('known message errors inside a write transaction retain identity, parameters and cause', async t => {
-  const factory = new IDBFactory();
+test('known message errors inside a write transaction retain identity, parameters and cause', async () => {
+  const store = await createTestStore();
   const cause = new Error('original diagnostic');
   const error = new MessageError({ code: 'duplicateWord', params: { word: 'apple' } }, { cause });
-  const open = factory.open.bind(factory);
-  factory.open = (name, version) => {
-    const request = open(name, version);
-    request.addEventListener('success', () => {
-      const db = request.result;
-      const transact = db.transaction.bind(db);
-      db.transaction = (...args: Parameters<IDBDatabase['transaction']>) => {
-        const tx = transact(...args);
-        if (tx.mode === 'readwrite') tx.objectStore('words').add = () => { throw error; };
-        return tx;
-      };
-    });
-    return request;
-  };
-  const store = createWordStore({ name: 'messages-pass-through', indexedDB: factory });
-  t.after(() => store.close());
+  store.db.failOn(/INSERT INTO words/, error);
   await assert.rejects(store.save(createEntry('apple')), caught => {
     assert.equal(caught, error);
     return hasMessage(error.detail, cause)(caught);
