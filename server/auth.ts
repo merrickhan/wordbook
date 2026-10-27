@@ -12,6 +12,18 @@ export type AuthConfig = { password: string; sessionSecret: string };
 
 const encoder = new TextEncoder();
 
+/** Names (never values) of settings that are missing or too short, for configuration diagnostics. */
+export function configProblems(config: Partial<AuthConfig>): string[] {
+  const problems: string[] = [];
+  if (typeof config.password !== 'string' || !config.password) problems.push('WORDBOOK_PASSWORD is not set');
+  else if (config.password.length < MIN_PASSWORD_LENGTH)
+    problems.push(`WORDBOOK_PASSWORD is shorter than ${MIN_PASSWORD_LENGTH} characters`);
+  if (typeof config.sessionSecret !== 'string' || !config.sessionSecret) problems.push('WORDBOOK_SESSION_SECRET is not set');
+  else if (config.sessionSecret.length < MIN_SECRET_LENGTH)
+    problems.push(`WORDBOOK_SESSION_SECRET is shorter than ${MIN_SECRET_LENGTH} characters`);
+  return problems;
+}
+
 export function validConfig(config: Partial<AuthConfig>): config is AuthConfig {
   return typeof config.password === 'string' && config.password.length >= MIN_PASSWORD_LENGTH
     && typeof config.sessionSecret === 'string' && config.sessionSecret.length >= MIN_SECRET_LENGTH;

@@ -17,7 +17,8 @@ export function createHandler(env: Environment): (request: Request) => Promise<R
     : undefined;
   return async request => {
     if (app) return app.handle(request);
-    console.error('WORDBOOK_DATABASE_URL, DATABASE_URL or POSTGRES_URL must be set');
-    return Response.json({ error: { code: 'serverMisconfigured' } }, { status: 500, headers: { 'cache-control': 'no-store' } });
+    const problems = ['None of WORDBOOK_DATABASE_URL, DATABASE_URL or POSTGRES_URL is set'];
+    console.error(problems[0]);
+    return Response.json({ error: { code: 'serverMisconfigured' }, problems }, { status: 500, headers: { 'cache-control': 'no-store' } });
   };
 }

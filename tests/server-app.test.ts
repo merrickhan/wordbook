@@ -53,7 +53,10 @@ test('missing or weak configuration fails closed without touching the database',
     const { db, call } = await setup(config);
     const response = await call('GET', '/api/library');
     assert.equal(response.status, 500);
-    assert.deepEqual(await errorOf(response), { code: 'serverMisconfigured' });
+    const body = await response.json() as { error: unknown; problems: string[] };
+    assert.deepEqual(body.error, { code: 'serverMisconfigured' });
+    assert.equal(body.problems.length, 1);
+    assert.ok(body.problems.every(problem => !problem.includes(password) && !problem.includes(sessionSecret)));
     assert.deepEqual(db.modes, []);
   }
 });

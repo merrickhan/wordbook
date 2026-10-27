@@ -2,7 +2,7 @@
 import { MAX_BACKUP_BYTES } from '../src/backup.js';
 import { MessageError, type Message } from '../src/messages.js';
 import {
-  clearLoginFailures, clearedSessionCookie, createSessionToken, isAuthenticated, loginThrottled,
+  clearLoginFailures, clearedSessionCookie, configProblems, createSessionToken, isAuthenticated, loginThrottled,
   passwordMatches, recordLoginFailure, sessionCookie, validConfig, type AuthConfig,
 } from './auth.js';
 import type { Database } from './db.js';
@@ -188,8 +188,10 @@ export function createApp(options: AppOptions) {
       if (method !== 'GET' && request.headers.get(CLIENT_HEADER) !== '1')
         return failure(403, { code: 'requestRejected' });
       if (!validConfig(config)) {
-        log(new Error('WORDBOOK_PASSWORD (8+ characters) and WORDBOOK_SESSION_SECRET (32+ characters) must be set'));
-        return failure(500, { code: 'serverMisconfigured' });
+        const problems = configProblems(config);
+        log(new Error(problems.join('; ')));
+        // Names of missing settings are not secret and make deployment problems diagnosable.
+        return json({ error: { code: 'serverMisconfigured' }, problems }, 500);
       }
       if (route[0] === 'session' && route.length === 1) return await session(request, method, config);
       if (!await isAuthenticated(config, request, now())) return failure(401, { code: 'authRequired' });
